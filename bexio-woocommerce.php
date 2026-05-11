@@ -1,11 +1,11 @@
 <?php
 /**
  * Plugin Name: Bexio WooCommerce Integration
- * Plugin URI: https://upwork.com/
+ * Plugin URI: https://www.upwork.com/freelancers/~01a6e65817b86d4589?mp_source=share
  * Description: Complete Bexio API integration for WooCommerce with order sync, PDF generation, and accounting automation
- * Version: 1.1.0
+ * Version: 1.2.0
  * Author: Masum Billah
- * Author URI: https://upwork.com/
+ * Author URI: https://www.upwork.com/freelancers/~01a6e65817b86d4589?mp_source=share
  * Text Domain: bexio-wc
  * Domain Path: /languages
  * Requires at least: 5.8
@@ -84,6 +84,8 @@ class Bexio_WC_Integration {
         require_once BEXIO_WC_PLUGIN_DIR . 'includes/class-payment-mapper.php';
         require_once BEXIO_WC_PLUGIN_DIR . 'includes/class-migration-handler.php';
         require_once BEXIO_WC_PLUGIN_DIR . 'includes/class-rest-api-auth.php';
+        
+        //require_once BEXIO_WC_PLUGIN_DIR . 'includes/class-product-sync.php';
         
         // Admin
         if (is_admin()) {

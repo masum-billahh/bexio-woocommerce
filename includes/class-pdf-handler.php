@@ -193,6 +193,7 @@ class Bexio_WC_PDF_Handler {
 			
 			// Mark as attached so next emails don't include it
 			$order->update_meta_data('_pdf_attached_once', 1);
+			$order->add_order_note(__('Bexio order pdf was attached to the email', 'bexio-wc'));
 			$order->save();
 		}
 
@@ -604,45 +605,139 @@ class Bexio_WC_PDF_Handler {
     }
     
     public function render_pdf_meta_box($post_or_order) {
-        // Handle both post object and order object for HPOS compatibility
-        if ($post_or_order instanceof WC_Order) {
-            $order = $post_or_order;
-            $order_id = $order->get_id();
-        } else {
-            $order_id = $post_or_order->ID;
-            $order = wc_get_order($order_id);
-        }
-        
-        $bexio_order_id = $order->get_meta('_bexio_order_id');
-        $bexio_invoice_id = $order->get_meta('_bexio_invoice_id');
-        ?>
-        <div class="bexio-pdfs">
-            <?php if ($bexio_order_id): ?>
-                <p>
-                    <strong><?php _e('Order PDF:', 'bexio-wc'); ?></strong><br>
-                    <a href="<?php echo admin_url('admin-ajax.php?action=bexio_download_order_pdf&order_id=' . $order_id . '&nonce=' . wp_create_nonce('bexio_pdf')); ?>" 
-                       class="button" target="_blank">
-                        <?php _e('Download Order PDF', 'bexio-wc'); ?>
-                    </a>
-                </p>
-            <?php endif; ?>
-            
-            <?php if ($bexio_invoice_id): ?>
-                <p>
-                    <strong><?php _e('Invoice PDF:', 'bexio-wc'); ?></strong><br>
-                    <a href="<?php echo admin_url('admin-ajax.php?action=bexio_download_invoice_pdf&order_id=' . $order_id . '&nonce=' . wp_create_nonce('bexio_pdf')); ?>" 
-                       class="button" target="_blank">
-                        <?php _e('Download Invoice PDF', 'bexio-wc'); ?>
-                    </a>
-                </p>
-            <?php endif; ?>
-            
-            <?php if (!$bexio_order_id && !$bexio_invoice_id): ?>
-                <p><?php _e('No Bexio documents available yet.', 'bexio-wc'); ?></p>
-            <?php endif; ?>
-        </div>
-        <?php
-    }
+		if ($post_or_order instanceof WC_Order) {
+			$order = $post_or_order;
+			$order_id = $order->get_id();
+		} else {
+			$order_id = $post_or_order->ID;
+			$order = wc_get_order($order_id);
+		}
+
+		$bexio_order_id   = $order->get_meta('_bexio_order_id');
+		$bexio_invoice_id = $order->get_meta('_bexio_invoice_id');
+		?>
+		<div class="bexio-pdfs">
+
+			<?php if ($bexio_order_id): ?>
+				<p>
+					<strong><?php _e('Order PDF:', 'bexio-wc'); ?></strong><br>
+					<a href="<?php echo admin_url('admin-ajax.php?action=bexio_download_order_pdf&order_id=' . $order_id . '&nonce=' . wp_create_nonce('bexio_pdf')); ?>"
+					   class="button" target="_blank">
+						<?php _e('Download Order PDF', 'bexio-wc'); ?>
+					</a>
+				</p>
+			<?php endif; ?>
+
+			<?php if ($bexio_invoice_id): ?>
+				<p>
+					<strong><?php _e('Invoice PDF:', 'bexio-wc'); ?></strong><br>
+					<a href="<?php echo admin_url('admin-ajax.php?action=bexio_download_invoice_pdf&order_id=' . $order_id . '&nonce=' . wp_create_nonce('bexio_pdf')); ?>"
+					   class="button" target="_blank">
+						<?php _e('Download Invoice PDF', 'bexio-wc'); ?>
+					</a>
+				</p>
+			<?php endif; ?>
+
+			<?php if (!$bexio_order_id && !$bexio_invoice_id): ?>
+				<p><?php _e('No Bexio documents available yet.', 'bexio-wc'); ?></p>
+			<?php endif; ?>
+
+			<hr style="margin: 12px 0;">
+
+			<!-- Cancel Bexio Order -->
+			<?php if ($bexio_order_id): ?>
+			<p>
+				<button class="button cancel-bexio-order"
+						data-order_id="<?php echo esc_attr($order_id); ?>"
+						style="width:100%;">
+					🗑 <?php _e('Cancel Bexio Order', 'bexio-wc'); ?>
+				</button>
+			</p>
+			<?php endif; ?>
+
+			<!-- Resync (delete + recreate) -->
+			<p>
+				<button class="button resync-bexio-order"
+						data-order_id="<?php echo esc_attr($order_id); ?>"
+						style="width:100%; background:#b32d2e; color:#fff; border-color:#a02020;">
+					↻ <?php _e('Delete & Recreate Bexio Order', 'bexio-wc'); ?>
+				</button>
+			</p>
+
+			<!-- Complete in Bexio without invoice email -->
+			<p>
+				<button class="button complete-no-invoice-bexio-order"
+						data-order_id="<?php echo esc_attr($order_id); ?>"
+						style="width:100%; background:#2e7d32; color:#fff; border-color:#1b5e20;">
+					✓ <?php _e('Complete in Bexio (No email)', 'bexio-wc'); ?>
+				</button>
+			</p>
+
+		</div>
+
+		<script type="text/javascript">
+		jQuery(document).ready(function($) {
+
+			// --- Cancel ---
+			$('.cancel-bexio-order').on('click', function(e) {
+				e.preventDefault();
+				if (!confirm('Cancel this order in Bexio?')) return;
+				var $btn = $(this);
+				$btn.prop('disabled', true);
+				$.ajax({
+					url: ajaxurl, type: 'POST',
+					data: {
+						action: 'cancel_bexio_order',
+						order_id: $btn.data('order_id'),
+						security: '<?php echo wp_create_nonce("cancel_bexio_order_nonce"); ?>'
+					},
+					success: function(r) { alert(r.data.message || 'Done'); },
+					complete: function() { $btn.prop('disabled', false); }
+				});
+			});
+
+			// --- Resync ---
+			$('.resync-bexio-order').on('click', function(e) {
+				e.preventDefault();
+				if (!confirm('This will delete and recreate the Bexio order + invoice without sending any emails. Continue?')) return;
+				var $btn = $(this);
+				$btn.prop('disabled', true).text('Resyncing…');
+				$.ajax({
+					url: ajaxurl, type: 'POST',
+					data: {
+						action: 'resync_bexio_order',
+						order_id: $btn.data('order_id'),
+						security: '<?php echo wp_create_nonce("resync_bexio_order_nonce"); ?>'
+					},
+					success: function(r) { alert(r.data.message || 'Done'); },
+					error: function() { alert('Request failed. Check error logs.'); },
+					complete: function() { $btn.prop('disabled', false).text('↻ Delete & Recreate Bexio Order'); }
+				});
+			});
+
+			// --- Complete, no invoice email ---
+			$('.complete-no-invoice-bexio-order').on('click', function(e) {
+				e.preventDefault();
+				if (!confirm('This will complete the order in Bexio and create an invoice, but will NOT send any invoice email. Continue?')) return;
+				var $btn = $(this);
+				$btn.prop('disabled', true).text('Processing…');
+				$.ajax({
+					url: ajaxurl, type: 'POST',
+					data: {
+						action: 'complete_no_invoice_bexio_order',
+						order_id: $btn.data('order_id'),
+						security: '<?php echo wp_create_nonce("complete_no_invoice_bexio_nonce"); ?>'
+					},
+					success: function(r) { alert(r.data.message || 'Done'); },
+					error: function() { alert('Request failed. Check error logs.'); },
+					complete: function() { $btn.prop('disabled', false).text('✓ Complete in Bexio (no invoice email)'); }
+				});
+			});
+
+		});
+		</script>
+		<?php
+	}
     
     /**
      * Add order actions

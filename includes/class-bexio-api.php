@@ -305,7 +305,7 @@ public function request($endpoint, $method = 'GET', $data = null, $from_taxes = 
     public function search_contact($email) {
         $contacts = $this->request('contact/search', 'POST', array(
             array(
-                'field' => 'mail',
+                'field' => 'mail_second',
                 'value' => $email,
                 'criteria' => '='
             )
@@ -324,6 +324,16 @@ public function request($endpoint, $method = 'GET', $data = null, $from_taxes = 
     public function create_order($data) {
         return $this->request('kb_order', 'POST', $data);
     }
+	
+	public function search_orders($field, $value, $criteria = '=') {
+		return $this->request('kb_order/search', 'POST', [
+			[
+				'field'    => $field,
+				'value'    => $value,
+				'criteria' => $criteria,
+			]
+		]);
+	}
     
     public function get_order($order_id) {
         return $this->request('kb_order/' . $order_id);
@@ -367,10 +377,10 @@ public function request($endpoint, $method = 'GET', $data = null, $from_taxes = 
     /**
      * Invoice Management
      */
-    public function create_invoice($bexio_order_id) {
-        return $this->request('kb_order/' . $bexio_order_id . '/invoice', 'POST');
-    }
-    
+   public function create_invoice($bexio_order_id, $data = []) {
+		return $this->request('kb_order/' . $bexio_order_id . '/invoice', 'POST', $data);
+	}
+
     public function get_invoice($invoice_id) {
         return $this->request('kb_invoice/' . $invoice_id);
     }

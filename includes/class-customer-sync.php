@@ -46,8 +46,14 @@ class Bexio_WC_Customer_Sync {
         }
         
         // Search for contact by email
-        $email = $order->get_billing_email();
-        $existing_contact = $this->api->search_contact($email);
+        //$email = $order->get_billing_email();
+		$email = $order->get_meta('_shipping_email');
+		
+		if ($email){
+			$existing_contact = $this->api->search_contact($email);
+		}
+		
+        
         
         if ($existing_contact && isset($existing_contact['id'])) {
             // Contact found, update and return
@@ -117,17 +123,12 @@ class Bexio_WC_Customer_Sync {
         // Determine country
         $country_id = $this->get_country_id($billing['country']);
 		
-		// If shipping address not entered at all, use billing
-		if (
-			empty($shipping['address_1']) &&
-			empty($shipping['postcode']) &&
-			empty($shipping['city'])
-		) {
-			$shipping['address_1'] = $billing['address_1'] ?? '';
-			$shipping['address_2'] = $billing['address_2'] ?? '';
-			$shipping['postcode']  = $billing['postcode'] ?? '';
-			$shipping['city']      = $billing['city'] ?? '';
-		}
+		// Billing is priority for address. Fall back to shipping if billing fields are empty.
+		$address_source = (
+			!empty($billing['address_1']) ||
+			!empty($billing['postcode']) ||
+			!empty($billing['city'])
+		) ? $billing : $shipping;
         
         $data = array(
             'contact_type_id' => !empty($billing['company']) ? 1 : 2, // if company 1,  person 2
@@ -136,11 +137,11 @@ class Bexio_WC_Customer_Sync {
             'mail' => $billing['email'],
 			'mail_second' => $second_mail,
             'phone_fixed' => $billing['phone'],
-			'street_name'      => $shipping['address_1'],
+			'street_name'      => $address_source['address_1'],
 			'house_number' => null,
-			'address_addition' => !empty($shipping['address_2']) ? $shipping['address_2'] : null,
-            'postcode' => $shipping['postcode'],
-            'city' => $shipping['city'],
+			'address_addition' => !empty($address_source['address_2']) ? $address_source['address_2'] : null,
+            'postcode' => $address_source['postcode'],
+            'city' => $address_source['city'],
             'country_id' => $country_id,
             'language_id' => $language_id,
         );

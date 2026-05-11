@@ -38,10 +38,14 @@ class Bexio_WC_Order_Sync {
 		
 		add_action('woocommerce_before_trash_order', [$this, 'handle_order_trash_delete'], 10, 2);
 		add_action('woocommerce_before_delete_order', [$this, 'handle_order_trash_delete'], 10, 2);
- 	    add_action('woocommerce_admin_order_data_after_order_details', [$this, 'add_cancel_bexio_button']);
         add_action('wp_ajax_cancel_bexio_order', [$this, 'ajax_cancel_bexio_order_handler']);
 		//invoice delay 3 days action schedule handler
 		add_action('bexio_wc_send_invoice_pdf_delayed', [ $this, 'handle_delayed_invoice_pdf' ], 10, 2);
+		
+		//resync button actions
+		add_action('wp_ajax_resync_bexio_order', [$this, 'ajax_resync_bexio_order_handler']);
+		// complete-no-invoice button
+		add_action('wp_ajax_complete_no_invoice_bexio_order', [$this, 'ajax_complete_no_invoice_bexio_handler']);
 	
     }
  
@@ -350,7 +354,7 @@ if (!empty($debug_info)) {
     /**
      * Complete order and create invoice in Bexio
      */
-    public function complete_bexio_order($order) {
+    public function complete_bexio_order($order, $is_it_from_only_invoice = false, $skip_invoice_email = false) {
         if (!$order instanceof WC_Order) {
             $order = wc_get_order($order);
         }
@@ -377,16 +381,30 @@ if (!empty($debug_info)) {
         try {
 			
 			// Create delivery from order
-			$bexio_delivery = $this->api->create_delivery($bexio_order_id);
-			if (!$bexio_delivery || !isset($bexio_delivery['id'])) {
-                throw new Exception('Failed to create delivery in Bexio');
-            }
-			$bexio_delivery_id = $bexio_delivery['id'];
+			if (!$is_it_from_only_invoice) {
+				$bexio_delivery = $this->api->create_delivery($bexio_order_id);
+				if (!$bexio_delivery || !isset($bexio_delivery['id'])) {
+					throw new Exception('Failed to create delivery in Bexio');
+				}
+				$bexio_delivery_id = $bexio_delivery['id'];
+
+				$this->api->issue_delivery($bexio_delivery_id);
+			}
 			
-			$this->api->issue_delivery($bexio_delivery_id);
 			
             // Create invoice from order
-            $bexio_invoice = $this->api->create_invoice($bexio_order_id);
+            $order_created_date = $order->get_date_created();
+			$order_reference = $order->get_id();
+			if ($order_created_date && $order_created_date->format('Y') < 2026) {
+				$original_order_id = $order->get_meta('_original_order_id', true);
+				if ($original_order_id) {
+					$order_reference = $original_order_id;
+				}
+			}
+
+			$bexio_invoice = $this->api->create_invoice($bexio_order_id, [
+				'document_nr' => $order_reference,
+			]);
             
             if (!$bexio_invoice || !isset($bexio_invoice['id'])) {
                 throw new Exception('Failed to create invoice in Bexio');
@@ -415,14 +433,19 @@ if (!empty($debug_info)) {
             //$this->send_invoice_pdf($order, $bexio_invoice_id);
 
 			//NEW- Invoice Delayed 3 days
-			as_schedule_single_action(
-				strtotime('+3 days'),
-				'bexio_wc_send_invoice_pdf_delayed',
-				[ 'order_id' => $order->get_id(), 'bexio_invoice_id' => $bexio_invoice_id ],
-				'bexio-wc'
-			);      
-			
-			$this->log_sync($order->get_id(), 'Scheduled_invoice', 'success', 'Invoice Email Scheduled after 3 days: ' . $bexio_invoice_id, null, $bexio_invoice_id);
+			if ( $skip_invoice_email ) {
+				$this->log_sync($order->get_id(), 'Scheduled_invoice', 'skipped', 'Invoice email skipped — triggered via no-email button', null, $bexio_invoice_id);
+			} elseif ( $order->get_payment_method() == 'cod' ) {
+				as_schedule_single_action(
+					strtotime('+3 days'),
+					'bexio_wc_send_invoice_pdf_delayed',
+					[ 'order_id' => $order->get_id(), 'bexio_invoice_id' => $bexio_invoice_id ],
+					'bexio-wc'
+				);
+				$this->log_sync($order->get_id(), 'Scheduled_invoice', 'success', 'Invoice Email Scheduled after 3 days: ' . $bexio_invoice_id, null, $bexio_invoice_id);
+			} else {
+				$this->log_sync($order->get_id(), 'Scheduled_invoice', 'skipped', 'PAID order — invoice email not scheduled', null, $bexio_invoice_id);
+			}
 
             $this->log_sync($order->get_id(), 'invoice_create', 'success', 'Invoice created: ' . $bexio_invoice_id, null, $bexio_invoice_id);
             $this->log_sync($order->get_id(), 'delivery_create', 'success', 'Delivery created: ' . $bexio_delivery_id, null, $bexio_delivery_id);
@@ -507,6 +530,16 @@ if (!empty($debug_info)) {
 	 private function edit_invoice($bexio_invoice_id, $order) {
 		 $date_completed = $order->get_date_paid() ?: $order->get_date_completed();
 		 
+		 $order_created_date = $order->get_date_created();
+		// Use _original_order_id for orders before 2026, otherwise use order_id
+		$order_reference = $order->get_id();
+		if ($order_created_date && $order_created_date->format('Y') < 2026) {
+			$original_order_id = $order->get_meta('_original_order_id', true);
+			if ($original_order_id) {
+				$order_reference = $original_order_id;
+			}
+		}
+		 
 		 // If both are empty, use current time
 		if (!$date_completed) {
 			$date_completed = wc_string_to_datetime('now');
@@ -515,6 +548,7 @@ if (!empty($debug_info)) {
 		 $is_valid_from  = $date_completed->date('Y-m-d');
 		 $is_valid_to  = date('Y-m-d', strtotime($is_valid_from . ' +1 month'));
 		 $data = array(
+			'document_nr' => $order_reference,
 			'is_valid_from' => $is_valid_from,
 			'is_valid_to' => $is_valid_to,
 			'api_reference' => 'wc_order_' . $order->get_id(),
@@ -534,9 +568,20 @@ if (!empty($debug_info)) {
     /**
      * Prepare order data for Bexio
      */
-    private function prepare_order_data($order, $contact_id, $is_it_update = false) {
-
+    private function prepare_order_data($order, $contact_id, $is_it_update = false) {		
+				
+		$order_created_date = $order->get_date_created();
+		// Use _original_order_id for orders before 2026, otherwise use order_id
+		$order_reference = $order->get_id();
+		if ($order_created_date && $order_created_date->format('Y') < 2026) {
+			$original_order_id = $order->get_meta('_original_order_id', true);
+			if ($original_order_id) {
+				$order_reference = $original_order_id;
+			}
+		}
+		
 		$data = array(
+			'document_nr'      => $order_reference,
 			'contact_id'       => $contact_id,
 			'user_id'          => 1,
 			'language_id'      => $this->get_language_id($order),
@@ -607,18 +652,9 @@ if (!empty($debug_info)) {
         }
       }
 		
- 	    $order_created_date = $order->get_date_created();
+ 	    
 		$date_format = $order_created_date->format('Y-m-d');
 		$data['is_valid_from'] = $date_format;
-
-		// Use _original_order_id for orders before 2026, otherwise use order_id
-		$order_reference = $order->get_id();
-		if ($order_created_date && $order_created_date->format('Y') < 2026) {
-			$original_order_id = $order->get_meta('_original_order_id', true);
-			if ($original_order_id) {
-				$order_reference = $original_order_id;
-			}
-		}
 
 		$data['title']         = sprintf(__('Order #%s', 'bexio-wc'), $order_reference);
 		$data['header']        = $this->get_order_header($order);
@@ -680,6 +716,21 @@ if (!empty($debug_info)) {
             );
 			if ($order_date && $order_date->format('Y') < 2026) {
 				$positions[count($positions)-1]['tax_id'] = 28;
+			}
+			
+			// working for original price in the invoice
+			$oem_price = get_post_meta($product->get_id(), '_oem_price_field', true);
+			if (is_numeric($oem_price) && (float) $oem_price > 0) {
+				$oem_price_numeric = wc_format_decimal((float) $oem_price, wc_get_price_decimals());
+				$oem_text = sprintf(
+								__('Originalpreis <del>%s</del> ', 'bexio-wc'),
+								wc_price($oem_price_numeric)
+							);
+				
+				$positions[] = array(
+					'type' => 'KbPositionText',
+					'text' => $oem_text,
+            	);
 			}
 			
         }
@@ -804,6 +855,23 @@ if (!empty($debug_info)) {
 		if ($order_date && $order_date->format('Y') < 2026) {
 				$positions[count($positions)-1]['tax_id'] = 28;
 			}
+		
+			// Working for original price in the invoice
+			$oem_price = get_post_meta($product->get_id(), '_oem_price_field', true);
+			if (is_numeric($oem_price) && (float) $oem_price > 0) {
+				$oem_price_numeric = wc_format_decimal((float) $oem_price, wc_get_price_decimals());
+				$oem_text = sprintf(
+								__('Originalpreis <del>%s</del> ', 'bexio-wc'),
+								wc_price($oem_price_numeric)
+							);
+				
+				$positions[] = array(
+					'type' => 'KbPositionText',
+					'text' => $oem_text,
+            	);	
+				
+			}
+		
     }
     
     // Add shipping
@@ -1337,42 +1405,6 @@ private function position_needs_update($existing, $new) {
     }
     
 
-public function add_cancel_bexio_button($order) {
-  $bexio_order_id = $order->get_meta('_bexio_order_id');
-  if (!$bexio_order_id){
-      return;
-  }
-    ?>
-    <div class="order_data_column" style="width: 100%; margin-top: 10px;">
-    <button 
-        class="button cancel-bexio-order button-primary" 
-        data-order_id="<?php echo esc_attr($order->get_id()); ?>"
-    >
-        Cancel Bexio Order
-    </button>
-    </div>
-    <script type="text/javascript">
-    jQuery(document).ready(function($){
-        $('.cancel-bexio-order').on('click', function(e){
-            e.preventDefault();
-            var order_id = $(this).data('order_id');
-            $.ajax({
-                url: ajaxurl,
-                type: 'POST',
-                data: {
-                    action: 'cancel_bexio_order',
-                    order_id: order_id,
-                    security: '<?php echo wp_create_nonce("cancel_bexio_order_nonce"); ?>'
-                },
-                success: function(response){
-                    alert(response.data.message || 'Done');
-                }
-            });
-        });
-    });
-    </script>
-    <?php
-}
 
 public function ajax_cancel_bexio_order_handler() {
     check_ajax_referer('cancel_bexio_order_nonce', 'security');
@@ -1393,7 +1425,175 @@ public function ajax_cancel_bexio_order_handler() {
     wp_send_json_success(['message' => 'Bexio order cancelled']);
 }
 
+	
+	/**
+	 * cancel + recreate + complete Bexio order, Turn off all emails
+	 */
+	public function ajax_resync_bexio_order_handler() {
+		check_ajax_referer('resync_bexio_order_nonce', 'security');
 
+		if (!current_user_can('edit_shop_orders')) {
+			wp_send_json_error(['message' => 'Insufficient permissions']);
+		}
+
+		$order_id = isset($_POST['order_id']) ? intval($_POST['order_id']) : 0;
+		if (!$order_id) {
+			wp_send_json_error(['message' => 'Invalid order ID']);
+		}
+
+		$order = wc_get_order($order_id);
+		if (!$order) {
+			wp_send_json_error(['message' => 'Order not found']);
+		}
+
+		// Suppress all PDF emails
+		add_filter('bexio_wc_skip_order_email',   '__return_true');
+		add_filter('bexio_wc_skip_invoice_email', '__return_true');
+
+		// Cancel any pending scheduled invoice email
+		as_unschedule_all_actions(
+			'bexio_wc_send_invoice_pdf_delayed',
+			['order_id' => $order_id],
+			'bexio-wc'
+		);
+
+		// ── Resolve order_reference (same logic as prepare_order_data) ──
+		$order_created_date = $order->get_date_created();
+		$order_reference    = $order->get_id();
+		if ($order_created_date && $order_created_date->format('Y') < 2026) {
+			$original_order_id = $order->get_meta('_original_order_id', true);
+			if ($original_order_id) {
+				$order_reference = $original_order_id;
+			}
+		}
+
+		// ── Search Bexio for the order by document_nr ──
+		$search_results = $this->api->search_orders('document_nr', (string) $order_reference);
+
+		$bexio_order_id = 0;
+
+		if (!empty($search_results) && isset($search_results[0]['id'])) {
+			$bexio_order_id = (int) $search_results[0]['id'];
+
+			// Keep local meta in sync with what Bexio actually has
+			$order->update_meta_data('_bexio_order_id', $bexio_order_id);
+			$order->save();
+
+			$this->log_sync($order->get_id(), 'resync', 'success', 'Found Bexio order via document_nr search: ' . $bexio_order_id, $bexio_order_id);
+		} else {
+			// Fall back to stored meta
+			$bexio_order_id = (int) $order->get_meta('_bexio_order_id', true);
+
+			if (!$bexio_order_id) {
+				$this->log_sync($order->get_id(), 'resync', 'error', 'No Bexio order found via search or meta for document_nr: ' . $order_reference);
+			}
+		}
+
+		// ── Delete payment first (invoice can't be deleted while paid) ──
+		$bexio_invoice_id = (int) $order->get_meta('_bexio_invoice_id', true);
+		$bexio_payment_id = (int) $order->get_meta('_bexio_payment_id', true);
+
+		if ($bexio_invoice_id > 0 && $bexio_payment_id > 0) {
+			$this->api->delete_payment($bexio_invoice_id, $bexio_payment_id);
+			$order->delete_meta_data('_bexio_payment_id');
+			$order->delete_meta_data('_bexio_payment_synced');
+			$order->save();
+		}
+
+		// ── Delete the existing invoice ──
+		if ($bexio_invoice_id > 0) {
+			$this->api->issue_to_draft_invoice($bexio_invoice_id);
+			$this->api->delete_invoice($bexio_invoice_id);
+			$order->delete_meta_data('_bexio_invoice_id');
+			$order->delete_meta_data('_bexio_delivery_id');
+			$order->delete_meta_data('_bexio_invoice_pdf');
+			$order->delete_meta_data('_bexio_invoice_pdf_sent');
+			$order->save();
+		}
+
+		// ── If still no Bexio order, create one ──
+		if (!$bexio_order_id) {
+			$bexio_order_id = $this->create_bexio_order($order);
+			if (!$bexio_order_id) {
+				wp_send_json_error(['message' => 'No Bexio order found and failed to create one']);
+			}
+		}
+
+		// ── Create a fresh invoice from the existing order ──
+		$new_bexio_invoice_id = $this->complete_bexio_order($order, $is_it_from_only_invoice= true);
+
+		$msg = $new_bexio_invoice_id
+			? "Invoice recreated. Order #{$bexio_order_id}, Invoice #{$new_bexio_invoice_id}. No emails sent."
+			: "Invoice creation failed for Order #{$bexio_order_id}. No emails sent.";
+
+		wp_send_json_success(['message' => $msg]);
+	}
+
+	
+	/**
+	 * Complete order in Bexio WITHOUT sending any invoice email
+	 */
+	public function ajax_complete_no_invoice_bexio_handler() {
+		check_ajax_referer('complete_no_invoice_bexio_nonce', 'security');
+
+		if (!current_user_can('edit_shop_orders')) {
+			wp_send_json_error(['message' => 'Insufficient permissions']);
+		}
+
+		$order_id = isset($_POST['order_id']) ? intval($_POST['order_id']) : 0;
+		if (!$order_id) {
+			wp_send_json_error(['message' => 'Invalid order ID']);
+		}
+
+		$order = wc_get_order($order_id);
+		if (!$order) {
+			wp_send_json_error(['message' => 'Order not found']);
+		}
+
+		// Suppress Bexio PDF emails
+		add_filter('bexio_wc_skip_order_email',   '__return_true');
+		add_filter('bexio_wc_skip_invoice_email', '__return_true');
+
+		// Suppress WooCommerce's own "completed order" email
+		add_filter('woocommerce_email_enabled_customer_completed_order', '__return_false');
+		add_filter('woocommerce_email_enabled_completed_order',          '__return_false');
+
+		// Cancel any pending scheduled invoice email
+		as_unschedule_all_actions(
+			'bexio_wc_send_invoice_pdf_delayed',
+			['order_id' => $order_id],
+			'bexio-wc'
+		);
+
+		// Ensure order exists in Bexio first
+		$bexio_order_id = (int) $order->get_meta('_bexio_order_id', true);
+		if (!$bexio_order_id) {
+			$bexio_order_id = $this->create_bexio_order($order);
+			if (!$bexio_order_id) {
+				wp_send_json_error(['message' => 'Failed to create Bexio order']);
+			}
+		}
+
+		// Create delivery + invoice in Bexio, no emails
+		$bexio_invoice_id = $this->complete_bexio_order($order, false, true);
+
+		if (!$bexio_invoice_id) {
+			wp_send_json_error(['message' => "Invoice creation failed for Order #{$bexio_order_id}."]);
+		}
+
+		// Mark this order as being processed by us so handle_order_status_change
+		// doesn't trigger another Bexio sync cycle
+		$this->processing_orders[$order_id] = true;
+
+		// Now move WooCommerce order to completed (emails already suppressed above)
+		$order->update_status('completed', '[Bexio] Completed via no-invoice button — no email sent.', true);
+
+		unset($this->processing_orders[$order_id]);
+
+		wp_send_json_success([
+			'message' => "Order completed. Bexio Order #{$bexio_order_id}, Invoice #{$bexio_invoice_id}. No emails sent."
+		]);
+	}
     
     /**
      * Send invoice PDF
