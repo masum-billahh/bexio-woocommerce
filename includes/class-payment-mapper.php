@@ -32,7 +32,7 @@ class Bexio_WC_Payment_Mapper {
             $order = wc_get_order($order);
         }
         
-        if (!$order || !$order->is_paid()) {
+        if (!$order) {
             return false;
         }
         
@@ -97,6 +97,7 @@ class Bexio_WC_Payment_Mapper {
             'stripe',
             'stripe_cc',
             'paypal',
+            'ppcp-gateway',
             'square',
             'square_credit_card',
         );
@@ -104,6 +105,7 @@ class Bexio_WC_Payment_Mapper {
         $twint_methods = array(
             'twint',
             'wc_twint',
+            'zahls',
         );
         
         $invoice_methods = array(

@@ -453,6 +453,63 @@ public function request($endpoint, $method = 'GET', $data = null, $from_taxes = 
     }
     
     /**
+	 * Quote / Offer Management
+	 * Bexio endpoint: kb_offer
+	 */
+	public function create_quote( $data ) {
+		return $this->request( 'kb_offer', 'POST', $data );
+	}
+ 
+	public function get_quote( $quote_id ) {
+		return $this->request( 'kb_offer/' . $quote_id );
+	}
+ 
+	public function update_quote( $quote_id, $data ) {
+		return $this->request( 'kb_offer/' . $quote_id, 'POST', $data );
+	}
+ 
+	/**
+	 * Issue a quote (moves it from draft → issued, assigns a document number).
+	 */
+	public function issue_quote( $quote_id ) {
+		return $this->request( 'kb_offer/' . $quote_id . '/issue', 'POST' );
+	}
+ 
+	/**
+	 * Revert an issued quote back to draft so it can be edited or deleted.
+	 */
+	public function revert_quote( $quote_id ) {
+		return $this->request( 'kb_offer/' . $quote_id . '/revertIssue', 'POST' );
+	}
+ 
+	/**
+	 * Delete a quote (must be in draft status first — call revert_quote() beforehand).
+	 */
+	public function delete_quote( $quote_id ) {
+		return $this->request( 'kb_offer/' . $quote_id, 'DELETE' );
+	}
+ 
+	/**
+	 * Mark a quote as sent (so Bexio records that the customer received it).
+	 */
+	public function mark_quote_as_sent( $quote_id ) {
+		return $this->request( 'kb_offer/' . $quote_id . '/mark_as_sent', 'POST' );
+	}
+ 
+	/**
+	 * Fetch quote PDF from Bexio and return raw binary content.
+	 */
+	public function get_quote_pdf( $quote_id ) {
+		$response = $this->request( 'kb_offer/' . $quote_id . '/pdf', 'GET' );
+ 
+		if ( is_wp_error( $response ) || empty( $response['content'] ) ) {
+			return false;
+		}
+ 
+		return base64_decode( $response['content'] );
+	}
+    
+    /**
      * Payment Management
      */
     public function create_payment($invoice_id, $data) {

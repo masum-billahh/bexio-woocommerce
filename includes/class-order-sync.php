@@ -425,7 +425,7 @@ if (!empty($debug_info)) {
 			$this->sync_bexio_positions($order, $bexio_order_id, $bexio_invoice_id);
             
             // Handle payment if already paid
-            if ($order->is_paid()) {
+           if ($order->get_payment_method() !== 'cod') {
                 $this->sync_payment($order, $bexio_invoice_id);
             }
             
@@ -604,36 +604,22 @@ if (!empty($debug_info)) {
 		}
 		
 		if ($is_different_address) {
-			$lines = [];
-			if (!empty($billing['company'])) {
-				$lines[] = $billing['company'];
-			}
+    $data['contact_address_manual'] = $billing_address_string;
 
-			$full_name = trim(($billing['first_name'] ?? '') . ' ' . ($billing['last_name'] ?? ''));
-			if ($full_name) {
-				$lines[] = $full_name;
-			}
+    // NEW - shipping delivery address
+    $shipping_lines = [];
+    if (!empty($shipping['company']))       $shipping_lines[] = $shipping['company'];
+    $full_name = trim($shipping['first_name'] . ' ' . $shipping['last_name']);
+    if ($full_name)                         $shipping_lines[] = $full_name;
+    if (!empty($shipping['address_1']))     $shipping_lines[] = $shipping['address_1'];
+    if (!empty($shipping['address_2']))     $shipping_lines[] = $shipping['address_2'];
+    $pc_city = trim($shipping['postcode'] . ' ' . $shipping['city']);
+    if ($pc_city)                           $shipping_lines[] = $pc_city;
 
-			if (!empty($billing['address_1'])) {
-				$lines[] = $billing['address_1'];
-			}
-
-			if (!empty($billing['address_2'])) {
-				$lines[] = $billing['address_2'];
-			}
-
-			$postcode_city = trim(($billing['postcode'] ?? '') . ' ' . ($billing['city'] ?? ''));
-			if ($postcode_city) {
-				$lines[] = $postcode_city;
-			}
-
-			if (!empty($billing['state'])) {
-				$lines[] = $billing['state'];
-			}
-
-			$billing_address_string = implode("\n", $lines);
-			$data['contact_address_manual'] = $billing_address_string;
-		}
+    $data['delivery_address_type']   = 1;
+    $data['delivery_address_manual'] = implode("\n", $shipping_lines);
+}
+      
 
         
         $order_date = $order->get_meta('_date_paid');
@@ -673,86 +659,68 @@ if (!empty($debug_info)) {
      * Prepare positions array for order creation
      */
    private function prepare_order_positions($order) {
+    try {
         $positions = array();
         $order_date = $order->get_date_paid();
-	    $current_lang = function_exists('icl_object_id') ? apply_filters('wpml_current_language', null) : false;
-    	$this->switch_to_order_language($order);
-		
+        $current_lang = function_exists('icl_object_id') ? apply_filters('wpml_current_language', null) : false;
+        $this->switch_to_order_language($order);
+        
         // Add products
         foreach ($order->get_items() as $item) {
             $product = $item->get_product();
             $account_id = get_option('bexio_wc_product_account', '149');
             $tax_id = $this->get_tax_id();
-			
-			$unit_price = ($item->get_total() + $item->get_total_tax()) / $item->get_quantity();
-
-			$text = ucfirst($item->get_name());
-			/*
-			if ( $item->get_meta('_is_service') === 'yes' ) {
-				$oem_price = get_post_meta($product->get_id(), '_oem_price_field', true);
-				if ( $oem_price ) {
-					$oem_price_numeric = wc_format_decimal((float) $oem_price, wc_get_price_decimals());
-					$text = $text . ('Original price<del>' . wc_price($oem_price_numeric) . '</del> ');
-				} else {
-					$text = $item->get_name();
-				}
-			} else {
-				$text = $text;
-			}
-			*/
+            
+            $unit_price = ($item->get_total() + $item->get_total_tax()) / $item->get_quantity();
+            $text = ucfirst($item->get_name());
             
             $positions[] = array(
                 'type' => 'KbPositionCustom',
                 'amount' => $item->get_quantity(),
-                'unit_id' => 1, // Pieces
+                'unit_id' => 1,
                 'account_id' => 149,
                 'tax_id' => 28,
                 'text' => $text,
                 'unit_price' => round(
-    ($item->get_total() + $item->get_total_tax()) / $item->get_quantity(),
-    2
-),
+                    ($item->get_total() + $item->get_total_tax()) / $item->get_quantity(),
+                    2
+                ),
                 'discount_in_percent' => 0,
             );
-			if ($order_date && $order_date->format('Y') < 2026) {
-				$positions[count($positions)-1]['tax_id'] = 28;
-			}
-			
-			// working for original price in the invoice
-			$oem_price = get_post_meta($product->get_id(), '_oem_price_field', true);
-			if (is_numeric($oem_price) && (float) $oem_price > 0) {
-				$oem_price_numeric = wc_format_decimal((float) $oem_price, wc_get_price_decimals());
-				$oem_text = sprintf(
-								__('Originalpreis <del>%s</del> ', 'bexio-wc'),
-								wc_price($oem_price_numeric)
-							);
-				
-				$positions[] = array(
-					'type' => 'KbPositionText',
-					'text' => $oem_text,
-            	);
-			}
-			
+
+            if ($order_date && $order_date->format('Y') < 2026) {
+                $positions[count($positions)-1]['tax_id'] = 28;
+            }
+            
+            // working for original price in the invoice
+            $oem_price = get_post_meta($product->get_id(), '_oem_price_field', true);
+            if (is_numeric($oem_price) && (float) $oem_price > 0) {
+                $oem_price_numeric = wc_format_decimal((float) $oem_price, wc_get_price_decimals());
+                $oem_text = sprintf(
+                    __('Originalpreis <del>%s</del> ', 'bexio-wc'),
+                    wc_price($oem_price_numeric)
+                );
+                
+                $positions[] = array(
+                    'type' => 'KbPositionText',
+                    'text' => $oem_text,
+                );
+            }
         }
         
         // Add shipping
         $shipping_items = $order->get_items('shipping');
-    	if (!empty($shipping_items)) {
+        if (!empty($shipping_items)) {
             $account_id = get_option('bexio_wc_shipping_account', '151');
             $tax_id = $this->get_tax_id();
-			
-			 foreach ($shipping_items as $shipping_item) {
-				$shipping_method_title = $shipping_item->get_name();
-			}
-			
-			$shipping_total = $order->get_shipping_total();
-			$shipping_tax = $order->get_shipping_tax();
-
-			if ($order_date && $order_date->format('Y') < 2026) {
-				$unit_price = round($shipping_total + $shipping_tax, 2);
-			} else {
-				$unit_price = round($shipping_total + $shipping_tax, 2);
-			}
+            
+            foreach ($shipping_items as $shipping_item) {
+                $shipping_method_title = $shipping_item->get_name();
+            }
+            
+            $shipping_total = $order->get_shipping_total();
+            $shipping_tax = $order->get_shipping_tax();
+            $unit_price = round($shipping_total + $shipping_tax, 2);
             
             $positions[] = array(
                 'type' => 'KbPositionCustom',
@@ -764,65 +732,89 @@ if (!empty($debug_info)) {
                 'unit_price' => $unit_price,
                 'discount_in_percent' => 0,
             );
-			
-			if ($order_date && $order_date->format('Y') < 2026) {
-				$positions[count($positions)-1]['tax_id'] = 28;
-			}
+            
+            if ($order_date && $order_date->format('Y') < 2026) {
+                $positions[count($positions)-1]['tax_id'] = 28;
+            }
         }
-	   
-	   //fee items
-	    $fee_items = $order->get_items('fee');
-		foreach ( $fee_items as $fee ) {
-			$fee_total = (float) $fee->get_total();
-			$fee_tax   = (float) $fee->get_total_tax();
+        
+        // fee items
+        $fee_items = $order->get_items('fee');
+        foreach ( $fee_items as $fee ) {
+            $fee_total = (float) $fee->get_total();
+            $fee_tax   = (float) $fee->get_total_tax();
 
-			// Normal fee (positive)
-			if ( $fee_total > 0 ) {
-				$positions[] = array(
-					'type'        => 'KbPositionCustom',
-					'amount'      => 1,
-					'unit_id'     => 1,
-					'account_id'  => 149, 
-					'tax_id'      => 28,
-					'text'        => $fee->get_name(),
-					'unit_price'  => round($fee_total + $fee_tax, 2),
-					'discount_in_percent' => 0,
-				);
-			}	
-			// Discount fee (negative)
-			elseif ( $fee_total < 0 ) {
-				$positions[] = array(
-					'type'          => 'KbPositionDiscount',
-					'text'          => $fee->get_name(),
-					'is_percentual' => false,
-					'value'         => (string) abs( $fee_total + $fee_tax ),
-				);
-			}
-		}
+            if ( $fee_total > 0 ) {
+                $positions[] = array(
+                    'type'        => 'KbPositionCustom',
+                    'amount'      => 1,
+                    'unit_id'     => 1,
+                    'account_id'  => 149,
+                    'tax_id'      => 28,
+                    'text'        => $fee->get_name(),
+                    'unit_price'  => round($fee_total + $fee_tax, 2),
+                    'discount_in_percent' => 0,
+                );
+            } elseif ( $fee_total < 0 ) {
+                $positions[] = array(
+                    'type'          => 'KbPositionDiscount',
+                    'text'          => $fee->get_name(),
+                    'is_percentual' => false,
+                    'value'         => (string) abs( $fee_total + $fee_tax ),
+                );
+            }
+        }
+        
+        // Add discount (coupon) positions
+        // Add discount (coupon) positions
+$discount_items = $order->get_items('coupon');
+foreach ( $discount_items as $discount ) {
+    $discount_amount = (float) $discount->get_discount();
 
-	   
-	   // Add discount (coupon) positions
-		$discount_items = $order->get_items('coupon');
-		foreach ( $discount_items as $discount ) {
-			$discount_amount = (float) $item->get_discount();
-
-			if ( $discount_amount <= 0 ) {
-				continue;
-			}
-
-			$positions[] = array(
-				'type'          => 'KbPositionDiscount',
-				'text'          => $item->get_name(), 
-				'is_percentual' => false,
-				'value'         => (string) $discount_amount,
-			);
-		}
-
-	   
-        $this->restore_language($current_lang);
-	   
-        return $positions;
+    if ( $discount_amount <= 0 ) {
+        continue;
     }
+
+    // Check if the discount was already absorbed into product line item totals.
+    // WooCommerce reduces item->get_total() when a coupon is applied, so the
+    // subtotal (pre-discount) minus the actual total equals what was absorbed.
+    $absorbed = 0;
+    foreach ( $order->get_items() as $item ) {
+        $absorbed += ( (float) $item->get_subtotal() - (float) $item->get_total() );
+    }
+
+    // If the full discount is already reflected in item prices, skip the position.
+    // Use a small epsilon for float comparison.
+    if ( abs( $absorbed - $discount_amount ) < 0.01 ) {
+        $this->log_sync(
+            $order->get_id(),
+            'position_discount',
+            'skipped',
+            'Coupon "' . $discount->get_name() . '" already absorbed into item prices — skipping KbPositionDiscount'
+        );
+        continue;
+    }
+
+    $positions[] = array(
+        'type'          => 'KbPositionDiscount',
+        'text'          => $discount->get_name(),
+        'is_percentual' => false,
+        'value'         => (string) $discount_amount,
+    );
+}
+        
+        $this->restore_language($current_lang);
+        
+        return $positions;
+
+    } catch (Exception $e) {
+        $this->log_sync($order->get_id(), 'position_debug', 'error', 'Line: ' . $e->getLine() . ' | ' . $e->getMessage() . ' | ' . $e->getTraceAsString());
+        return array();
+    } catch (Error $e) {
+        $this->log_sync($order->get_id(), 'position_debug', 'error', 'Line: ' . $e->getLine() . ' | ' . $e->getMessage() . ' | ' . $e->getTraceAsString());
+        return array();
+    }
+}
 	
 	private function prepare_order_positions_when_updating($order) {
     $positions = array();
@@ -976,15 +968,24 @@ if (!empty($debug_info)) {
 		// Add discount (coupon) positions
 		$discount_items = $order->get_items('coupon');
 		foreach ( $discount_items as $discount ) {
-			$discount_amount = (float) $item->get_discount();
+			$discount_amount = (float) $discount->get_discount(); // was wrongly $item->get_discount()
 
 			if ( $discount_amount <= 0 ) {
 				continue;
 			}
 
+			$absorbed = 0;
+			foreach ( $order->get_items() as $item ) {
+				$absorbed += ( (float) $item->get_subtotal() - (float) $item->get_total() );
+			}
+
+			if ( abs( $absorbed - $discount_amount ) < 0.01 ) {
+				continue;
+			}
+
 			$positions[] = array(
 				'type'          => 'KbPositionDiscount',
-				'text'          => $item->get_name(), 
+				'text'          => $discount->get_name(),
 				'is_percentual' => false,
 				'value'         => (string) $discount_amount,
 			);

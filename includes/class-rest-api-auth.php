@@ -77,6 +77,7 @@ class Bexio_WC_REST_Auth {
                 "offline_access",
                 "contact_show",
                 "contact_edit",
+				"kb_offer_edit", 
                 "kb_order_show",
                 "kb_order_edit",
 				"kb_delivery_show",
@@ -86,7 +87,8 @@ class Bexio_WC_REST_Auth {
 				"kb_article_order_show",
 				"kb_article_order_edit",
                 "kb_invoice_show",
-                "kb_invoice_edit"  
+                "kb_invoice_edit",
+                "bank_account_show"
                 ));
             
             // This will redirect to Bexio
@@ -135,6 +137,7 @@ class Bexio_WC_REST_Auth {
                 "offline_access",
                 "contact_show",
                 "contact_edit",
+				"kb_offer_edit", 
                 "kb_order_show",
                 "kb_order_edit",
 				"kb_delivery_show",
@@ -144,8 +147,8 @@ class Bexio_WC_REST_Auth {
 				"kb_article_order_show",
 				"kb_article_order_edit",
                 "kb_invoice_show",
-                "kb_invoice_edit"
-                 
+                "kb_invoice_edit",
+                "bank_account_show"
               ));
             
             // Complete authentication

@@ -87,6 +87,9 @@ class Bexio_WC_Integration {
         
         //require_once BEXIO_WC_PLUGIN_DIR . 'includes/class-product-sync.php';
         
+        //quotes
+        require_once BEXIO_WC_PLUGIN_DIR . 'includes/class-quotes.php';
+        
         // Admin
         if (is_admin()) {
             require_once BEXIO_WC_PLUGIN_DIR . 'admin/class-admin-settings.php';
@@ -98,6 +101,7 @@ class Bexio_WC_Integration {
         Bexio_WC_Order_Sync::get_instance();
         Bexio_WC_PDF_Handler::get_instance();
         Bexio_WC_Customer_Sync::get_instance();
+        Bexio_WC_Quote_Sync::get_instance();
         
         
         if (is_admin()) {

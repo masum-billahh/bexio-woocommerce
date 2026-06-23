@@ -66,6 +66,7 @@ class Bexio_WC_PDF_Handler {
 
 		add_action('woocommerce_order_action_email_bexio_invoice_pdf', function($order){
 			add_filter('bexio_wc_force_send_email', '__return_true');
+ 		    $this->send_invoice_pdf($order);
 		}, 1);
  
         // HPOS-compatible columns 
@@ -615,6 +616,7 @@ class Bexio_WC_PDF_Handler {
 
 		$bexio_order_id   = $order->get_meta('_bexio_order_id');
 		$bexio_invoice_id = $order->get_meta('_bexio_invoice_id');
+		$bexio_offer_id = $order->get_meta('_bexio_quote_id');
 		?>
 		<div class="bexio-pdfs">
 
@@ -637,8 +639,10 @@ class Bexio_WC_PDF_Handler {
 					</a>
 				</p>
 			<?php endif; ?>
+			
+			<?php do_action( 'bexio_wc_after_pdf_meta_box', $order ); ?>
 
-			<?php if (!$bexio_order_id && !$bexio_invoice_id): ?>
+			<?php if (!$bexio_order_id && !$bexio_invoice_id && !$bexio_offer_id): ?>
 				<p><?php _e('No Bexio documents available yet.', 'bexio-wc'); ?></p>
 			<?php endif; ?>
 
