@@ -73,6 +73,7 @@ class Bexio_WC_REST_Auth {
             $oidc->setRedirectURL($redirect_uri);
             $oidc->addScope(array(
                 "openid",
+                "general",
                 "profile",
                 "offline_access",
                 "contact_show",
@@ -133,6 +134,7 @@ class Bexio_WC_REST_Auth {
             $oidc->setRedirectURL($redirect_uri);
             $oidc->addScope(array(
                 "openid",
+                "general",
                 "profile",
                 "offline_access",
                 "contact_show",

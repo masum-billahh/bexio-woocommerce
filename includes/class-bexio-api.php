@@ -523,12 +523,16 @@ public function request($endpoint, $method = 'GET', $data = null, $from_taxes = 
         return $this->request('account');
     }
     
+    public function get_users() {
+      return $this->request('users', 'GET', null, true);
+    }
+    
     public function get_taxes() {
 		return $this->request('taxes', 'GET', null, true);
 	}
     
     public function get_banks() {
-        return $this->request('banking/account');
+        return $this->request('banking/accounts', 'GET', null, true);
     }
     
     /**

@@ -78,7 +78,7 @@ class Bexio_WC_Order_Sync {
             $create_status = 'processing';
         }
 
-        $complete_statuses = (array) get_option('bexio_wc_complete_on_status', ['shipped','abholbereit', 'completed']);
+        $complete_statuses = (array) get_option('bexio_wc_complete_on_status', ['shipped','abholbereit', 'fulfillment', 'completed']);
 
         // Check if order should be created in Bexio
         if ($new_status === $create_status) {
@@ -1369,16 +1369,34 @@ private function position_needs_update($existing, $new) {
 		}
 	}
     
-    private function get_bank_account_id($payment_method) {
-        // Map payment methods to bank accounts
-        $card_methods = array('stripe', 'paypal', 'square');
-        
+   private function get_bank_account_id($payment_method) {
+        // Card methods → bank account 2
+        $card_methods = array(
+            'stripe',
+            'stripe_cc',
+            'paypal',
+            'ppcp-gateway',
+            'square',
+            'square_credit_card',
+        );
+
+        // Twint / Zahls (Payrexx) → bank account 3
+        $twint_methods = array(
+            'twint',
+            'wc_twint',
+            'zahls',
+        );
+
         if (in_array($payment_method, $card_methods)) {
-            return get_option('bexio_wc_card_bank_id', 1);
+            return get_option('bexio_wc_card_bank_id', 2);
         }
-        
-        //return get_option('bexio_wc_invoice_bank_id', 1);
-		return 1;
+
+        if (in_array($payment_method, $twint_methods)) {
+            return get_option('bexio_wc_twint_bank_id', 3);
+        }
+
+        // Everything else (bacs, cheque, cod, invoice) → bank account 1
+        return get_option('bexio_wc_invoice_bank_id', 1);
     }
     
     private function get_currency_id($currency_code) {

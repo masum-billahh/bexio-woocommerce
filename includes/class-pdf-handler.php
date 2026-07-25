@@ -83,6 +83,13 @@ class Bexio_WC_PDF_Handler {
         
         // Add custom CSS for the column icons
         add_action('admin_head', array($this, 'add_column_styles'));
+        
+        //bulk pdf print
+        add_filter('bulk_actions-woocommerce_page_wc-orders', array($this, 'add_curated_bulk_action'));
+        add_filter('handle_bulk_actions-woocommerce_page_wc-orders', array($this, 'handle_curated_bulk_action'), 10, 3);
+        add_action('admin_init', array($this, 'render_curated_print_view'));
+        add_action('wp_ajax_bexio_stream_curated_pdf', array($this, 'stream_curated_pdf'));
+        add_action('admin_footer', array($this, 'add_curated_print_new_tab_script'));
     }
     
     /**
@@ -932,4 +939,214 @@ class Bexio_WC_PDF_Handler {
 			}
 		}
 	}
+ 
+   /**
+ * Add the curated bulk action to the HPOS orders list dropdown.
+ */
+public function add_curated_bulk_action($bulk_actions) {
+    $bulk_actions['bexio_print_curated_pdfs'] = __('Print all bexio Invoices & Orders pdf', 'bexio-wc');
+    return $bulk_actions;
+}
+ 
+/**
+ * Handle the curated bulk action: build the print sequence, stash it
+ * for the current admin user, and redirect into the print view.
+ */
+public function handle_curated_bulk_action($redirect_to, $action, $post_ids) {
+    if ($action !== 'bexio_print_curated_pdfs' || empty($post_ids)) {
+        return $redirect_to;
+    }
+ 
+    $sequence = $this->build_curated_pdf_sequence($post_ids);
+ 
+    if (!empty($sequence)) {
+        set_transient('bexio_curated_print_' . get_current_user_id(), $sequence, 5 * MINUTE_IN_SECONDS);
+    }
+ 
+    return add_query_arg(array('bexio_print_curated' => 1), $redirect_to);
+}
+ 
+/**
+ * Build the ordered list of PDF filenames: grouped by customer
+ * (billing email), Invoice-then-Order within each group, Invoice
+ * only included when the order's payment method is 'cod'.
+ *
+ * @return string[] basenames of files under uploads/bexio-pdfs
+ */
+private function build_curated_pdf_sequence($order_ids) {
+    $groups = array();
+ 
+    // Group order IDs by customer, preserving first-seen order.
+    foreach ($order_ids as $order_id) {
+        $order = wc_get_order($order_id);
+        if (!$order) {
+            continue;
+        }
+ 
+        $customer_key = $order->get_billing_email();
+        if (empty($customer_key)) {
+            $customer_key = $order->get_customer_id()
+                ? 'uid_' . $order->get_customer_id()
+                : 'order_' . $order_id;
+        }
+ 
+        if (!isset($groups[$customer_key])) {
+            $groups[$customer_key] = array();
+        }
+        $groups[$customer_key][] = $order_id;
+    }
+ 
+    $sequence = array();
+ 
+    foreach ($groups as $customer_order_ids) {
+        foreach ($customer_order_ids as $order_id) {
+            $order = wc_get_order($order_id);
+            if (!$order) {
+                continue;
+            }
+ 
+            // Invoice PDF only for the "invoice" (pay-by-invoice) gateway.
+            if ($order->get_payment_method() === 'cod') {
+                $invoice_path = $this->get_invoice_pdf($order_id);
+                if ($invoice_path && file_exists($invoice_path)) {
+                    $sequence[] = basename($invoice_path);
+                }
+            }
+ 
+            // Order PDF, every time.
+            $order_path = $this->get_order_pdf($order_id);
+            if ($order_path && file_exists($order_path)) {
+                $sequence[] = basename($order_path);
+            }
+        }
+    }
+ 
+    return $sequence;
+}
+ 
+/**
+ * Intercept the redirect back to the orders screen and render the
+ * print view instead: one page, every PDF stacked as an <embed>,
+ * auto-triggers window.print() once loaded.
+ */
+public function render_curated_print_view() {
+    if (empty($_GET['bexio_print_curated']) || !isset($_GET['page']) || $_GET['page'] !== 'wc-orders') {
+        return;
+    }
+ 
+    if (!current_user_can('edit_shop_orders')) {
+        wp_die(__('Insufficient permissions', 'bexio-wc'));
+    }
+ 
+    $files = get_transient('bexio_curated_print_' . get_current_user_id());
+    if (!$files || empty($files)) {
+        wp_die(__('Nothing to print — no matching PDFs were found for the selected orders.', 'bexio-wc'));
+    }
+ 
+    $stream_nonce = wp_create_nonce('bexio_stream_pdf');
+    $ajax_url     = admin_url('admin-ajax.php');
+ 
+    nocache_headers();
+    ?>
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <meta charset="utf-8">
+        <title><?php esc_html_e('Print Documents', 'bexio-wc'); ?></title>
+        <style>
+            html, body { margin: 0; padding: 0; background: #525659; }
+            .pdf-frame { width: 100%; height: 100vh; border: none; display: block; }
+            @media print {
+                body { background: #fff; }
+                .pdf-frame { page-break-after: always; }
+                .pdf-frame:last-child { page-break-after: auto; }
+            }
+        </style>
+    </head>
+    <body>
+        <?php foreach ($files as $file) : ?>
+            <embed
+                class="pdf-frame"
+                type="application/pdf"
+                src="<?php echo esc_url(add_query_arg(array(
+                    'action'   => 'bexio_stream_curated_pdf',
+                    'file'     => rawurlencode($file),
+                    '_wpnonce' => $stream_nonce,
+                ), $ajax_url)); ?>">
+        <?php endforeach; ?>
+        <script>
+            window.addEventListener('load', function () {
+                // give every <embed> a moment to finish rendering before printing
+                setTimeout(function () { window.print(); }, 1200);
+            });
+        </script>
+    </body>
+    </html>
+    <?php
+    exit;
+}
+ 
+/**
+ * Stream a single cached PDF inline (not as a download) for the
+ * <embed> tags above. Only serves files that are on the current
+ * admin user's active curated-print whitelist.
+ */
+public function stream_curated_pdf() {
+    check_ajax_referer('bexio_stream_pdf', '_wpnonce');
+ 
+    if (!current_user_can('edit_shop_orders')) {
+        wp_die('', '', array('response' => 403));
+    }
+ 
+    $filename  = isset($_GET['file']) ? sanitize_file_name($_GET['file']) : '';
+    $whitelist = get_transient('bexio_curated_print_' . get_current_user_id());
+ 
+    if (!$filename || !$whitelist || !in_array($filename, $whitelist, true)) {
+        wp_die('', '', array('response' => 403));
+    }
+ 
+    $filepath = $this->upload_dir . '/' . $filename;
+    if (!file_exists($filepath)) {
+        wp_die('', '', array('response' => 404));
+    }
+ 
+    header('Content-Type: application/pdf');
+    header('Content-Disposition: inline; filename="' . $filename . '"');
+    header('Content-Length: ' . filesize($filepath));
+    readfile($filepath);
+    exit;
+}
+
+/**
+ * Force the "Print all bexio Invoices & Orders pdf" bulk action
+ * to open in a new tab instead of navigating away from the list.
+ */
+public function add_curated_print_new_tab_script() {
+    $screen = get_current_screen();
+    if (!$screen || $screen->id !== 'woocommerce_page_wc-orders') {
+        return;
+    }
+    ?>
+    <script type="text/javascript">
+    jQuery(function($) {
+        $(document).on('click', '#doaction, #doaction2', function(e) {
+            var $btn = $(this);
+            var isTop = $btn.attr('id') === 'doaction';
+            var selectedAction = isTop
+                ? $('select[name="action"]').val()
+                : $('select[name="action2"]').val();
+
+            var $form = $btn.closest('form');
+
+            if (selectedAction === 'bexio_print_curated_pdfs') {
+                $form.attr('target', '_blank');
+            } else {
+                $form.removeAttr('target');
+            }
+        });
+    });
+    </script>
+    <?php
+}
+   
 }

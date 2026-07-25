@@ -92,7 +92,7 @@ class Bexio_WC_Payment_Mapper {
      * Get bank account ID based on payment method
      */
     private function get_bank_account_id($payment_method) {
-        // Define payment method mappings
+        // Card methods → bank account 2
         $card_methods = array(
             'stripe',
             'stripe_cc',
@@ -101,30 +101,23 @@ class Bexio_WC_Payment_Mapper {
             'square',
             'square_credit_card',
         );
-        
+
+        // Twint / Zahls (Payrexx) → bank account 3
         $twint_methods = array(
             'twint',
             'wc_twint',
             'zahls',
         );
-        
-        $invoice_methods = array(
-            'bacs',
-            'cheque',
-            'cod',
-            'invoice',
-        );
-        
-        // Map to configured bank accounts
+
         if (in_array($payment_method, $card_methods)) {
-            // Credit card → Paypal account
-            return get_option('bexio_wc_card_bank_id', 1);
-        } elseif (in_array($payment_method, $twint_methods) || in_array($payment_method, $invoice_methods)) {
-            // Invoice & Twint → Raiffeisen account
-            return get_option('bexio_wc_invoice_bank_id', 1);
+            return get_option('bexio_wc_card_bank_id', 2);
         }
-        
-        // Default to invoice bank account
+
+        if (in_array($payment_method, $twint_methods)) {
+            return get_option('bexio_wc_twint_bank_id', 3);
+        }
+
+        // bacs, cheque, cod, invoice → bank account 1
         return get_option('bexio_wc_invoice_bank_id', 1);
     }
     

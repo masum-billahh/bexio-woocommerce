@@ -133,6 +133,9 @@ class Bexio_WC_Quote_Sync {
 
 			// 4. Issue the quote so it gets a proper document number and PDF.
 			$this->api->issue_quote( $quote_id );
+ 		
+  	        //TEST
+  	        //$bexio_users = $this->api->get_users();
 
 			// 5. Persist meta.
 			$order->update_meta_data( '_bexio_quote_id', $quote_id );
@@ -169,8 +172,8 @@ class Bexio_WC_Quote_Sync {
 			'currency_id'     => $this->get_currency_id( $order->get_currency() ),
 			'mwst_type'       => 0,
 			'mwst_is_net'     => false,
-			'is_valid_from'   => $order_date ? $order_date->date( 'Y-m-d' ) : date( 'Y-m-d' ),
-			'is_valid_until'     => date( 'Y-m-d', strtotime( '+30 days' ) ),
+			'is_valid_from'   => date( 'Y-m-d' ),
+			'is_valid_until'  => date( 'Y-m-d', strtotime( '+30 days' ) ),
 			'title'           => sprintf( __( 'Offer #%s', 'bexio-wc' ), $order_reference ),
 			'header'          => $this->get_quote_header( $order ),
 			'footer'          => $this->get_quote_footer( $order ),
