@@ -706,6 +706,17 @@ const SWISSPOST_LICENSE = '60156186';
 					✓ <?php _e('Complete in Bexio (No email)', 'bexio-wc'); ?>
 				</button>
 			</p>
+ 		
+  	
+  	        <?php if ($bexio_invoice_id): ?>
+<p>
+	<button class="button reschedule-bexio-invoice"
+			data-order_id="<?php echo esc_attr($order_id); ?>"
+			style="width:100%; background:#8e24aa; color:#fff; border-color:#6a1b9a;">
+		⏱ <?php _e('Refresh & Reschedule Invoice (+3 days)', 'bexio-wc'); ?>
+	</button>
+</p>
+<?php endif; ?>
 
 		</div>
 
@@ -748,6 +759,24 @@ const SWISSPOST_LICENSE = '60156186';
 					complete: function() { $btn.prop('disabled', false).text('↻ Delete & Recreate Bexio Order'); }
 				});
 			});
+ 		
+  	        $('.reschedule-bexio-invoice').on('click', function(e) {
+	e.preventDefault();
+	if (!confirm('This will revert the invoice to draft, resync current order data, re-issue it, and schedule the email for 3 days from now. Continue?')) return;
+	var $btn = $(this);
+	$btn.prop('disabled', true).text('Processing…');
+	$.ajax({
+		url: ajaxurl, type: 'POST',
+		data: {
+			action: 'reschedule_bexio_invoice',
+			order_id: $btn.data('order_id'),
+			security: '<?php echo wp_create_nonce("reschedule_bexio_invoice_nonce"); ?>'
+		},
+		success: function(r) { alert(r.data.message || 'Done'); },
+		error: function() { alert('Request failed. Check error logs.'); },
+		complete: function() { $btn.prop('disabled', false).text('⏱ Refresh & Reschedule Invoice (+3 days)'); }
+	});
+});
 
 			// --- Complete, no invoice email ---
 			$('.complete-no-invoice-bexio-order').on('click', function(e) {

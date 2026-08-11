@@ -46,7 +46,9 @@ class Bexio_WC_Order_Sync {
 		add_action('wp_ajax_resync_bexio_order', [$this, 'ajax_resync_bexio_order_handler']);
 		// complete-no-invoice button
 		add_action('wp_ajax_complete_no_invoice_bexio_order', [$this, 'ajax_complete_no_invoice_bexio_handler']);
-	
+	    
+ 	   //resync issued invoice
+        add_action('wp_ajax_reschedule_bexio_invoice', [$this, 'ajax_reschedule_bexio_invoice_handler']);
     }
  
     /**
@@ -1621,6 +1623,70 @@ public function ajax_cancel_bexio_order_handler() {
         $pdf_handler = Bexio_WC_PDF_Handler::get_instance();
         $pdf_handler->send_invoice_pdf($order, $bexio_invoice_id);
     }
+    
+    /**
+ * Revert issued invoice -> draft, resync order data into it,
+ * re-issue, and re-schedule the delayed send 3 days out.
+ */
+public function ajax_reschedule_bexio_invoice_handler() {
+    check_ajax_referer('reschedule_bexio_invoice_nonce', 'security');
+
+    if (!current_user_can('edit_shop_orders')) {
+        wp_send_json_error(['message' => 'Insufficient permissions']);
+    }
+
+    $order_id = isset($_POST['order_id']) ? intval($_POST['order_id']) : 0;
+    $order = $order_id ? wc_get_order($order_id) : false;
+    if (!$order) {
+        wp_send_json_error(['message' => 'Order not found']);
+    }
+
+    $bexio_order_id   = (int) $order->get_meta('_bexio_order_id', true);
+    $bexio_invoice_id = (int) $order->get_meta('_bexio_invoice_id', true);
+    $bexio_payment_id = (int) $order->get_meta('_bexio_payment_id', true);
+
+    if (!$bexio_invoice_id) {
+        wp_send_json_error(['message' => 'No Bexio invoice on this order']);
+    }
+
+    // Bexio won't let you revert an invoice that has a payment on it.
+    if ($bexio_payment_id) {
+        wp_send_json_error(['message' => 'Invoice has a payment recorded in Bexio — remove that first.']);
+    }
+
+    // Don't let an old scheduled send fire on top of the new one
+    as_unschedule_all_actions('bexio_wc_send_invoice_pdf_delayed', ['order_id' => $order_id], 'bexio-wc');
+
+    //  Issued -> Draft
+    $reverted = $this->api->issue_to_draft_invoice($bexio_invoice_id);
+    if (!$reverted) {
+        wp_send_json_error(['message' => 'Failed to revert invoice to draft in Bexio']);
+    }
+
+    // Push current order data back into the (now-editable) draft
+    $this->edit_invoice($bexio_invoice_id, $order);
+    $this->sync_bexio_positions($order, $bexio_order_id, $bexio_invoice_id);
+
+    //Draft -> Issued again
+    $issued = $this->api->issue_invoice($bexio_invoice_id);
+    if (!$issued) {
+        wp_send_json_error(['message' => 'Invoice updated but failed to re-issue — check Bexio manually.']);
+    }
+    if ($order->get_payment_method() == 'cod') {
+    // Re-schedule the customer email 3 days out
+    as_schedule_single_action(
+        strtotime('+3 days'),
+        'bexio_wc_send_invoice_pdf_delayed',
+        ['order_id' => $order_id, 'bexio_invoice_id' => $bexio_invoice_id],
+        'bexio-wc'
+    );
+    
+    }
+
+    $this->log_sync($order_id, 'reschedule_invoice', 'success', 'Invoice reverted, updated, re-issued, rescheduled +3 days', $bexio_order_id, $bexio_invoice_id);
+
+    wp_send_json_success(['message' => 'Invoice updated and rescheduled to send in 3 days.']);
+}
     
     /**
      * Log sync activity
