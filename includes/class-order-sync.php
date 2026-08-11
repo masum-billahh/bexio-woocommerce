@@ -73,12 +73,12 @@ class Bexio_WC_Order_Sync {
         if ($has_mixed_item_pick_home) {
             $create_status = 'service-pickhome';
         } elseif ($has_service_items) {
-            $create_status = 'service-eingetrof';
+            //$create_status = 'service-eingetrof';
         } else {
             $create_status = 'processing';
         }
 
-        $complete_statuses = (array) get_option('bexio_wc_complete_on_status', ['shipped','abholbereit', 'fulfillment', 'completed']);
+        $complete_statuses = (array) get_option('bexio_wc_complete_on_status', ['shipped','abholbereit', 'completed']);
 
         // Check if order should be created in Bexio
         if ($new_status === $create_status) {

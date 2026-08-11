@@ -15,6 +15,20 @@ class Bexio_WC_PDF_Handler {
     private $api;
     private $upload_dir;
     
+    
+private $pickup_shipping_instance_ids = array(18, 19);
+
+// Shipping method instance IDs that require a GAS ("gas_eco") label —
+// these are independent of the pickup instance IDs above.
+private $gas_shipping_instance_ids = array(23, 24);
+
+// Confirmed from the plugin's own handler:
+// wp_verify_nonce($_POST['nonce'], 'ajax-nonce')
+const SWISSPOST_NONCE_ACTION = 'ajax-nonce';
+
+// whether it should be pulled from a plugin option instead.
+const SWISSPOST_LICENSE = '60156186';
+    
     public static function get_instance() {
         if (null === self::$instance) {
             self::$instance = new self();
@@ -90,6 +104,15 @@ class Bexio_WC_PDF_Handler {
         add_action('admin_init', array($this, 'render_curated_print_view'));
         add_action('wp_ajax_bexio_stream_curated_pdf', array($this, 'stream_curated_pdf'));
         add_action('admin_footer', array($this, 'add_curated_print_new_tab_script'));
+        add_action('wp_ajax_bexio_stream_merged_curated_pdf', array($this, 'stream_merged_curated_pdf'));
+        //swiss post bulk print
+        
+        add_filter('bulk_actions-woocommerce_page_wc-orders', array($this, 'add_swisspost_curated_bulk_action'));
+        add_filter('handle_bulk_actions-woocommerce_page_wc-orders', array($this, 'handle_swisspost_curated_bulk_action'), 10, 3);
+        add_action('admin_init', array($this, 'render_swisspost_curated_print_view'));
+        add_action('wp_ajax_bexio_swisspost_resolve_labels', array($this, 'ajax_resolve_swisspost_labels'));
+        add_action('wp_ajax_bexio_swisspost_stream_pdf', array($this, 'ajax_stream_swisspost_pdf'));
+    
     }
     
     /**
@@ -944,7 +967,9 @@ class Bexio_WC_PDF_Handler {
  * Add the curated bulk action to the HPOS orders list dropdown.
  */
 public function add_curated_bulk_action($bulk_actions) {
-    $bulk_actions['bexio_print_curated_pdfs'] = __('Print all bexio Invoices & Orders pdf', 'bexio-wc');
+    $bulk_actions['bexio_print_curated_pdfs']         = __('Print all bexio Invoices & Orders pdf', 'bexio-wc');
+    $bulk_actions['bexio_print_curated_orders_only']  = __('Print all bexio ORDER pdf only', 'bexio-wc');
+    $bulk_actions['bexio_print_curated_invoices_only']= __('Print all bexio INVOICE pdf only', 'bexio-wc');
     return $bulk_actions;
 }
  
@@ -953,16 +978,32 @@ public function add_curated_bulk_action($bulk_actions) {
  * for the current admin user, and redirect into the print view.
  */
 public function handle_curated_bulk_action($redirect_to, $action, $post_ids) {
-    if ($action !== 'bexio_print_curated_pdfs' || empty($post_ids)) {
+    $valid_actions = array(
+        'bexio_print_curated_pdfs',
+        'bexio_print_curated_orders_only',
+        'bexio_print_curated_invoices_only',
+    );
+
+    if (!in_array($action, $valid_actions, true) || empty($post_ids)) {
         return $redirect_to;
     }
- 
-    $sequence = $this->build_curated_pdf_sequence($post_ids);
- 
+
+    switch ($action) {
+        case 'bexio_print_curated_orders_only':
+            $sequence = $this->build_curated_pdf_sequence($post_ids, 'order');
+            break;
+        case 'bexio_print_curated_invoices_only':
+            $sequence = $this->build_curated_pdf_sequence($post_ids, 'invoice');
+            break;
+        default:
+            $sequence = $this->build_curated_pdf_sequence($post_ids, 'both');
+            break;
+    }
+
     if (!empty($sequence)) {
         set_transient('bexio_curated_print_' . get_current_user_id(), $sequence, 5 * MINUTE_IN_SECONDS);
     }
- 
+
     return add_query_arg(array('bexio_print_curated' => 1), $redirect_to);
 }
  
@@ -973,54 +1014,59 @@ public function handle_curated_bulk_action($redirect_to, $action, $post_ids) {
  *
  * @return string[] basenames of files under uploads/bexio-pdfs
  */
-private function build_curated_pdf_sequence($order_ids) {
+private function build_curated_pdf_sequence($order_ids, $mode = 'both') {
     $groups = array();
- 
-    // Group order IDs by customer, preserving first-seen order.
+
     foreach ($order_ids as $order_id) {
         $order = wc_get_order($order_id);
         if (!$order) {
             continue;
         }
- 
+
         $customer_key = $order->get_billing_email();
         if (empty($customer_key)) {
             $customer_key = $order->get_customer_id()
                 ? 'uid_' . $order->get_customer_id()
                 : 'order_' . $order_id;
         }
- 
+
         if (!isset($groups[$customer_key])) {
             $groups[$customer_key] = array();
         }
         $groups[$customer_key][] = $order_id;
     }
- 
+
     $sequence = array();
- 
+
     foreach ($groups as $customer_order_ids) {
         foreach ($customer_order_ids as $order_id) {
             $order = wc_get_order($order_id);
             if (!$order) {
                 continue;
             }
- 
-            // Invoice PDF only for the "invoice" (pay-by-invoice) gateway.
-            if ($order->get_payment_method() === 'cod') {
+
+            // Invoice PDF: included for 'both' (only on cod, same as before)
+            // or always for 'invoice'-only mode.
+            $include_invoice = ($mode === 'invoice')
+                || ($mode === 'both' && $order->get_payment_method() === 'cod');
+
+            if ($include_invoice) {
                 $invoice_path = $this->get_invoice_pdf($order_id);
                 if ($invoice_path && file_exists($invoice_path)) {
                     $sequence[] = basename($invoice_path);
                 }
             }
- 
-            // Order PDF, every time.
-            $order_path = $this->get_order_pdf($order_id);
-            if ($order_path && file_exists($order_path)) {
-                $sequence[] = basename($order_path);
+
+            // Order PDF: included for 'both' and 'order'-only, skipped for 'invoice'-only.
+            if ($mode !== 'invoice') {
+                $order_path = $this->get_order_pdf($order_id);
+                if ($order_path && file_exists($order_path)) {
+                    $sequence[] = basename($order_path);
+                }
             }
         }
     }
- 
+
     return $sequence;
 }
  
@@ -1033,19 +1079,19 @@ public function render_curated_print_view() {
     if (empty($_GET['bexio_print_curated']) || !isset($_GET['page']) || $_GET['page'] !== 'wc-orders') {
         return;
     }
- 
+
     if (!current_user_can('edit_shop_orders')) {
         wp_die(__('Insufficient permissions', 'bexio-wc'));
     }
- 
+
     $files = get_transient('bexio_curated_print_' . get_current_user_id());
     if (!$files || empty($files)) {
         wp_die(__('Nothing to print — no matching PDFs were found for the selected orders.', 'bexio-wc'));
     }
- 
+
     $stream_nonce = wp_create_nonce('bexio_stream_pdf');
     $ajax_url     = admin_url('admin-ajax.php');
- 
+
     nocache_headers();
     ?>
     <!DOCTYPE html>
@@ -1054,29 +1100,24 @@ public function render_curated_print_view() {
         <meta charset="utf-8">
         <title><?php esc_html_e('Print Documents', 'bexio-wc'); ?></title>
         <style>
-            html, body { margin: 0; padding: 0; background: #525659; }
+            html, body { margin: 0; padding: 0; height: 100%; background: #525659; }
             .pdf-frame { width: 100%; height: 100vh; border: none; display: block; }
             @media print {
                 body { background: #fff; }
-                .pdf-frame { page-break-after: always; }
-                .pdf-frame:last-child { page-break-after: auto; }
             }
         </style>
     </head>
     <body>
-        <?php foreach ($files as $file) : ?>
-            <embed
-                class="pdf-frame"
-                type="application/pdf"
-                src="<?php echo esc_url(add_query_arg(array(
-                    'action'   => 'bexio_stream_curated_pdf',
-                    'file'     => rawurlencode($file),
-                    '_wpnonce' => $stream_nonce,
-                ), $ajax_url)); ?>">
-        <?php endforeach; ?>
+        <embed
+            class="pdf-frame"
+            type="application/pdf"
+            src="<?php echo esc_url(add_query_arg(array(
+                'action'   => 'bexio_stream_merged_curated_pdf',
+                '_wpnonce' => $stream_nonce,
+            ), $ajax_url)); ?>">
         <script>
             window.addEventListener('load', function () {
-                // give every <embed> a moment to finish rendering before printing
+                // give the merged PDF a moment to finish rendering before printing
                 setTimeout(function () { window.print(); }, 1200);
             });
         </script>
@@ -1129,6 +1170,13 @@ public function add_curated_print_new_tab_script() {
     ?>
     <script type="text/javascript">
     jQuery(function($) {
+        var newTabActions = [
+            'bexio_print_curated_pdfs',
+            'bexio_print_curated_orders_only',
+            'bexio_print_curated_invoices_only',
+            'swisspost_print_curated_labels'
+        ];
+
         $(document).on('click', '#doaction, #doaction2', function(e) {
             var $btn = $(this);
             var isTop = $btn.attr('id') === 'doaction';
@@ -1138,7 +1186,7 @@ public function add_curated_print_new_tab_script() {
 
             var $form = $btn.closest('form');
 
-            if (selectedAction === 'bexio_print_curated_pdfs') {
+            if (newTabActions.indexOf(selectedAction) !== -1) {
                 $form.attr('target', '_blank');
             } else {
                 $form.removeAttr('target');
@@ -1147,6 +1195,430 @@ public function add_curated_print_new_tab_script() {
     });
     </script>
     <?php
+}
+
+public function stream_merged_curated_pdf() {
+    check_ajax_referer('bexio_stream_pdf', '_wpnonce');
+
+    if (!current_user_can('edit_shop_orders')) {
+        wp_die('', '', array('response' => 403));
+    }
+
+    $files = get_transient('bexio_curated_print_' . get_current_user_id());
+    if (!$files || empty($files)) {
+        wp_die('', '', array('response' => 404));
+    }
+
+    $fpdf_path = get_stylesheet_directory() . '/bexio-pdf-QR/fpdf/fpdf.php';
+    $fpdi_path = get_stylesheet_directory() . '/bexio-pdf-QR/fpdi/src/autoload.php';
+
+    if (!class_exists('FPDF')) {
+        require_once $fpdf_path;
+    }
+    if (!class_exists('\setasign\Fpdi\Fpdi')) {
+        require_once $fpdi_path;
+    }
+
+    $pdf = new \setasign\Fpdi\Fpdi();
+    $found_any = false;
+
+    foreach ($files as $filename) {
+        $filepath = trailingslashit($this->upload_dir) . $filename;
+        if (!file_exists($filepath)) {
+            continue;
+        }
+
+        $page_count = $pdf->setSourceFile($filepath);
+        for ($i = 1; $i <= $page_count; $i++) {
+            $template_id = $pdf->importPage($i);
+            $size = $pdf->getTemplateSize($template_id);
+
+            $orientation = ($size['width'] > $size['height']) ? 'L' : 'P';
+            $pdf->AddPage($orientation, array($size['width'], $size['height']));
+            $pdf->useTemplate($template_id);
+            $found_any = true;
+        }
+    }
+
+    if (!$found_any) {
+        wp_die('No pages found to merge', '', array('response' => 404));
+    }
+
+    while (ob_get_level() > 0) { ob_end_clean(); }
+    nocache_headers();
+    $pdf->Output('documents.pdf', 'I'); // inline — one merged document
+    exit;
+}
+
+
+//swiss post bulk
+
+/**
+ * ─────────────────────────────────────────────────────────────────
+ * Bulk action registration
+ * ─────────────────────────────────────────────────────────────────
+ */
+public function add_swisspost_curated_bulk_action($bulk_actions) {
+    $bulk_actions['swisspost_print_curated_labels'] = __('Print all Swiss Post shipping labels', 'bexio-wc');
+    return $bulk_actions;
+}
+ 
+/**
+ * Build the plan (which orders need which delivery methods, grouped
+ * by customer) and stash it — mirrors build_curated_pdf_sequence()
+ * but the payload is a generation PLAN, not finished filenames,
+ * because labels don't exist until generate_barcode is called.
+ */
+public function handle_swisspost_curated_bulk_action($redirect_to, $action, $post_ids) {
+    if ($action !== 'swisspost_print_curated_labels' || empty($post_ids)) {
+        return $redirect_to;
+    }
+ 
+    $plan = $this->build_swisspost_label_plan($post_ids);
+ 
+    if (!empty($plan)) {
+        set_transient('swisspost_curated_print_' . get_current_user_id(), $plan, 5 * MINUTE_IN_SECONDS);
+    }
+ 
+    return add_query_arg(array('swisspost_print_curated' => 1), $redirect_to);
+}
+ 
+/**
+ * Group by customer (same pattern as bexio), and for each order work
+ * out which delivery method(s) are actually needed.
+ *
+ * @return array[] list of ['order_id' => int, 'methods' => string[]]
+ *                 in curated (grouped-by-customer) order
+ */
+private function build_swisspost_label_plan($order_ids) {
+    $groups = array();
+ 
+    foreach ($order_ids as $order_id) {
+        $order = wc_get_order($order_id);
+        if (!$order) {
+            continue;
+        }
+ 
+        $customer_key = $order->get_billing_email();
+        if (empty($customer_key)) {
+            $customer_key = $order->get_customer_id()
+                ? 'uid_' . $order->get_customer_id()
+                : 'order_' . $order_id;
+        }
+ 
+        $groups[$customer_key][] = $order_id;
+    }
+ 
+    $plan = array();
+ 
+    foreach ($groups as $customer_order_ids) {
+        foreach ($customer_order_ids as $order_id) {
+            $order = wc_get_order($order_id);
+            if (!$order) {
+                continue;
+            }
+ 
+            $methods = $this->get_swisspost_needed_methods($order);
+            if (!empty($methods)) {
+                $plan[] = array(
+                    'order_id' => $order_id,
+                    'methods'  => $methods,
+                );
+            }
+        }
+    }
+ 
+    return $plan;
+}
+ 
+/**
+ * Priority: always, EXCEPT the two pickup shipping methods (18, 19).
+ * GAS: only when the shipping method is one of the two designated
+ * GAS instance ids (23, 24) — completely independent of the pickup
+ * rule above, so an order can get priority only, GAS only, both,
+ * or neither.
+ */
+private function get_swisspost_needed_methods($order) {
+    $methods = array();
+
+    $instance_id = 0;
+    foreach ($order->get_shipping_methods() as $shipping_item) {
+        $instance_id = (int) $shipping_item->get_instance_id();
+        break; // assume one shipping line per order
+    }
+
+    $is_pickup = in_array($instance_id, $this->pickup_shipping_instance_ids, true);
+    if (!$is_pickup) {
+        $methods[] = 'pri';
+    }
+
+    $is_gas_method = in_array($instance_id, $this->gas_shipping_instance_ids, true);
+    if ($is_gas_method) {
+        $methods[] = 'gas_eco';
+    }
+
+    return $methods;
+}
+ 
+ 
+/**
+ * ─────────────────────────────────────────────────────────────────
+ * Print view — generates labels via chained AJAX, then prints
+ * ─────────────────────────────────────────────────────────────────
+ */
+public function render_swisspost_curated_print_view() {
+    if (empty($_GET['swisspost_print_curated']) || !isset($_GET['page']) || $_GET['page'] !== 'wc-orders') {
+        return;
+    }
+ 
+    if (!current_user_can('edit_shop_orders')) {
+        wp_die(__('Insufficient permissions', 'bexio-wc'));
+    }
+ 
+    $plan = get_transient('swisspost_curated_print_' . get_current_user_id());
+    if (!$plan) {
+        wp_die(__('Nothing to print — no orders needed a label.', 'bexio-wc'));
+    }
+ 
+    $swisspost_nonce = wp_create_nonce(self::SWISSPOST_NONCE_ACTION);
+    // Our own resolver nonce (see ajax_resolve_swisspost_labels below) —
+    // separate from the Swiss Post plugin's nonce, we control both ends.
+    $resolve_nonce   = wp_create_nonce('bexio_swisspost_resolve');
+    $ajax_url        = admin_url('admin-ajax.php');
+ 
+    nocache_headers();
+    ?>
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <meta charset="utf-8">
+        <title><?php esc_html_e('Generating Labels…', 'bexio-wc'); ?></title>
+        <style>
+            html, body { margin: 0; padding: 0; background: #525659; color: #fff; font-family: sans-serif; }
+            #status { padding: 40px; text-align: center; font-size: 16px; }
+            .pdf-frame { width: 100%; height: 100vh; border: none; display: block; }
+            @media print {
+                body { background: #fff; }
+                .pdf-frame { page-break-after: always; }
+                .pdf-frame:last-child { page-break-after: auto; }
+            }
+        </style>
+    </head>
+    <body>
+        <script src="<?php echo includes_url('js/jquery/jquery.min.js'); ?>"></script>
+
+        <div id="status"><?php esc_html_e('Generating labels, please wait…', 'bexio-wc'); ?></div>
+        <div id="embeds"></div>
+        <script>
+        (function () {
+            var plan          = <?php echo wp_json_encode($plan); ?>; // [{order_id, methods:[...]}, ...] in curated order
+            var ajaxUrl       = <?php echo wp_json_encode($ajax_url); ?>;
+            var swisspostNonce = <?php echo wp_json_encode($swisspost_nonce); ?>;
+            var resolveNonce  = <?php echo wp_json_encode($resolve_nonce); ?>;
+            var license       = <?php echo wp_json_encode(self::SWISSPOST_LICENSE); ?>;
+ 
+            var labelFiles = []; // collected in curated (per-customer) order
+ 
+            // Generate every needed method for one order (sequentially —
+            // Swiss Post's own endpoint may not like concurrent calls for
+            // the same order), then resolve whatever landed on disk for
+            // that order_id and move to the next order.
+            function generateMethodsForOrder(orderId, methods, mi, done) {
+                if (mi >= methods.length) {
+                    return resolveOrder(orderId, done);
+                }
+                jQuery.post(ajaxUrl, {
+                    action: 'swisspost_generate_barcode',
+                    deliveryMethod: methods[mi],
+                    license: license,
+                    nonce: swisspostNonce,
+                    orders: orderId
+                }).always(function () {
+                    generateMethodsForOrder(orderId, methods, mi + 1, done);
+                });
+            }
+ 
+            // Ask our own resolver (folder scan, see
+            // ajax_resolve_swisspost_labels in PHP) which files exist for
+            // this order_id right now — avoids guessing the generate
+            // response shape entirely.
+            function resolveOrder(orderId, done) {
+                jQuery.post(ajaxUrl, {
+                    action: 'bexio_swisspost_resolve_labels',
+                    order_id: orderId,
+                    nonce: resolveNonce
+                }).done(function (response) {
+                    var files = (response && response.success && response.data && response.data.files) || [];
+                    files.forEach(function (f) { labelFiles.push(f); });
+                }).always(done);
+            }
+ 
+            function processOrder(i) {
+    if (i >= plan.length) {
+        return renderEmbeds();
+    }
+    var row = plan[i];
+
+    // Check first — if labels already exist for this order, use them
+    // and skip generation entirely.
+    jQuery.post(ajaxUrl, {
+        action: 'bexio_swisspost_resolve_labels',
+        order_id: row.order_id,
+        nonce: resolveNonce
+    }).done(function (response) {
+        var existing = (response && response.success && response.data && response.data.files) || [];
+
+        if (existing.length > 0) {
+            existing.forEach(function (f) { labelFiles.push(f); });
+            processOrder(i + 1);
+        } else {
+            generateMethodsForOrder(row.order_id, row.methods, 0, function () {
+                processOrder(i + 1);
+            });
+        }
+    }).fail(function () {
+        // Resolver failed — fall back to generating rather than skipping the order.
+        generateMethodsForOrder(row.order_id, row.methods, 0, function () {
+            processOrder(i + 1);
+        });
+    });
+}
+ 
+            function renderEmbeds() {
+    document.getElementById('status').textContent =
+        labelFiles.length
+            ? 'Loading ' + labelFiles.length + ' label(s)…'
+            : 'No label files were found after generation — check the swisspost-labels folder and the resolver.';
+
+    if (!labelFiles.length) {
+        return;
+    }
+
+    var container = document.getElementById('embeds');
+    var embed = document.createElement('embed');
+    embed.className = 'pdf-frame';
+    embed.type = 'application/pdf';
+    embed.src = ajaxUrl + '?action=bexio_swisspost_stream_pdf&labels=' + encodeURIComponent(labelFiles.join(','));
+    container.appendChild(embed);
+
+    window.addEventListener('load', function () {
+        setTimeout(function () { window.print(); }, 1200);
+    });
+    setTimeout(function () { window.print(); }, 1500);
+}
+ 
+            processOrder(0);
+        })();
+        </script>
+    </body>
+    </html>
+    <?php
+    exit;
+}
+ 
+/**
+ * Scan the swisspost-labels folder for whatever files exist for a
+ * given order_id (naming convention: {order_id}_{label_id}.png,
+ * confirmed from your example link). Called by the print view after
+ * triggering generate_barcode for that order, so it just reflects
+ * whatever is on disk right now — no need to parse
+ * swisspost_generate_barcode's own response shape.
+ *
+ * If an order already had older label files sitting in the folder from
+ * a previous, unrelated generation, this will pick those up too, since
+ * we're matching on order_id prefix only. That's fine here because we
+ * only just generated the labels this order needs, but flag it if you
+ * ever want it stricter (e.g. only files modified in the last minute).
+ */
+public function ajax_resolve_swisspost_labels() {
+    check_ajax_referer('bexio_swisspost_resolve', 'nonce');
+ 
+    if (!current_user_can('edit_shop_orders')) {
+        wp_send_json_error();
+    }
+ 
+    $order_id = isset($_POST['order_id']) ? absint($_POST['order_id']) : 0;
+    if (!$order_id) {
+        wp_send_json_error();
+    }
+ 
+
+    $upload_dir = wp_upload_dir();
+    $labels_dir = $upload_dir['basedir'] . '/swisspost-labels';
+ 
+    $matches = glob($labels_dir . '/' . $order_id . '_*.png');
+    $files   = array_map('basename', $matches ?: array());
+ 
+    wp_send_json_success(array('files' => $files));
+}
+ 
+ 
+ public function ajax_stream_swisspost_pdf() {
+    if (!current_user_can('edit_shop_orders')) {
+        wp_die(__('Insufficient permissions', 'bexio-wc'));
+    }
+
+    ini_set('display_errors', '0');
+    if (ob_get_level() === 0) {
+        ob_start();
+    }
+
+    $labelSize   = get_option('swisspost_pdf', 'a5');
+    $paperSize   = get_option('swisspost_pdf_paper', $labelSize);
+    $orientation = ((int) substr($paperSize, 1, 1) - (int) substr($labelSize, 1, 1)) % 2 === 0 ? 'L' : 'P';
+
+    $labels     = isset($_GET['labels']) ? sanitize_text_field($_GET['labels']) : '';
+    $label_list = array_filter(array_map('sanitize_file_name', explode(',', $labels)));
+
+    if (empty($label_list)) {
+        wp_die('Missing labels parameter');
+    }
+
+    $positions = \FirstPoint\SwissPost\Api\Barcode::calculate_positions($labelSize, $paperSize, $orientation);
+    if (empty($positions)) {
+        wp_die('Could not calculate label positions');
+    }
+
+    $pdf = new \TCPDF($orientation, 'mm', strtoupper($paperSize), true, 'UTF-8', false);
+    $pdf->setPrintHeader(false);
+    $pdf->setPrintFooter(false);
+    $pdf->SetMargins(0, 0, 0);
+    $pdf->SetAutoPageBreak(false, 0);
+    $pdf->AddPage();
+
+    $upload_dir = wp_upload_dir();
+    $labels_dir = rtrim($upload_dir['basedir'], '/\\') . '/swisspost-labels/';
+
+    $position = 0;
+    $at_least_one_image = false;
+
+    foreach ($label_list as $label) {
+        if ($position >= count($positions)) {
+            $position = 0;
+            $pdf->AddPage();
+        }
+        $file_path = $labels_dir . $label;
+        if (isset($positions[$position]) && file_exists($file_path)) {
+            $pdf->Image(
+                $file_path,
+                $positions[$position]['x'],
+                $positions[$position]['y'],
+                $positions[$position]['w'],
+                $positions[$position]['h']
+            );
+            $at_least_one_image = true;
+        }
+        ++$position;
+    }
+
+    if (!$at_least_one_image) {
+        wp_die('No label image found');
+    }
+
+    while (ob_get_level() > 0) { ob_end_clean(); }
+    nocache_headers();
+    $pdf->Output('label.pdf', 'I'); // 'I' = inline, not 'D' = download
+    exit;
 }
    
 }
