@@ -48,6 +48,9 @@ class Bexio_WC_Quote_Sync {
 		// Download quote PDF from admin meta box / orders list.
 		add_action( 'wp_ajax_bexio_download_quote_pdf', array( $this, 'ajax_download_quote_pdf' ) );
 
+		// Update quote in Bexio with current order data, then re-send it — meta box button.
+		add_action( 'wp_ajax_bexio_update_resend_quote', array( $this, 'ajax_update_resend_quote' ) );
+
 		// Cancel / delete quote when the order is cancelled / trashed / deleted.
 		add_action( 'woocommerce_order_status_cancelled', array( $this, 'maybe_cancel_bexio_quote' ), 10, 2 );
 		add_action( 'woocommerce_before_trash_order',     array( $this, 'handle_order_trash_delete' ), 10, 2 );
@@ -150,6 +153,62 @@ class Bexio_WC_Quote_Sync {
 			$this->log( $order->get_id(), 'quote_create', 'error', $e->getMessage() );
 			return false;
 		}
+	}
+
+	/**
+	 * Rebuild the Bexio quote from current order data.
+	 *
+	 * Bexio's edit endpoint (POST kb_offer/{id}) does not accept a
+	 * `positions` field — line items can't be patched on an existing
+	 * offer. So an "update" here means: delete the old quote, create a
+	 * fresh one from the current order state.
+	 *
+	 * @param  WC_Order $order
+	 * @return int|false  New Bexio quote ID on success, false on failure.
+	 */
+	public function update_bexio_quote( $order ) {
+		if ( ! $order instanceof WC_Order ) {
+			$order = wc_get_order( $order );
+		}
+		if ( ! $order ) {
+			return false;
+		}
+
+		$old_quote_id = (int) $order->get_meta( '_bexio_quote_id', true );
+		if ( $old_quote_id ) {
+			$this->delete_bexio_quote( $order );
+		}
+
+		$quote_id = $this->create_bexio_quote( $order );
+
+		if ( $quote_id ) {
+			$this->log( $order->get_id(), 'quote_update', 'success', 'Quote recreated: ' . $old_quote_id . ' -> ' . $quote_id, $quote_id );
+		}
+
+		return $quote_id;
+	}
+
+	/**
+	 * Recreate the quote in Bexio, then email the fresh PDF to the customer.
+	 *
+	 * @param  WC_Order $order
+	 * @return bool
+	 */
+	public function update_and_resend_quote( $order ) {
+		if ( ! $order instanceof WC_Order ) {
+			$order = wc_get_order( $order );
+		}
+		if ( ! $order ) {
+			return false;
+		}
+
+		$quote_id = $this->update_bexio_quote( $order );
+		if ( ! $quote_id ) {
+			return false;
+		}
+
+		add_filter( 'bexio_wc_force_send_email', '__return_true' );
+		return $this->send_quote_pdf( $order, $quote_id );
 	}
 
 	/* ------------------------------------------------------------------ */
@@ -569,6 +628,32 @@ class Bexio_WC_Quote_Sync {
 		wp_die( __( 'PDF not found', 'bexio-wc' ) );
 	}
 
+	/**
+	 * AJAX: update the Bexio quote from current order data and re-send the PDF.
+	 */
+	public function ajax_update_resend_quote() {
+		check_ajax_referer( 'bexio_quote_update_resend', 'nonce' );
+
+		if ( ! current_user_can( 'edit_shop_orders' ) ) {
+			wp_send_json_error( __( 'Insufficient permissions', 'bexio-wc' ) );
+		}
+
+		$order_id = isset( $_POST['order_id'] ) ? intval( $_POST['order_id'] ) : 0;
+		$order    = $order_id ? wc_get_order( $order_id ) : false;
+
+		if ( ! $order ) {
+			wp_send_json_error( __( 'Order not found', 'bexio-wc' ) );
+		}
+
+		$sent = $this->update_and_resend_quote( $order );
+
+		if ( $sent ) {
+			wp_send_json_success( array( 'message' => __( 'Quote updated & resent.', 'bexio-wc' ) ) );
+		}
+
+		wp_send_json_error( __( 'Update or resend failed — check the Bexio sync log.', 'bexio-wc' ) );
+	}
+
 	/* ------------------------------------------------------------------ */
 	/*  Meta box section (injected into the existing Bexio Documents box)  */
 	/* ------------------------------------------------------------------ */
@@ -591,7 +676,36 @@ class Bexio_WC_Quote_Sync {
 			   class="button" target="_blank">
 				<?php esc_html_e( 'Download Quote PDF', 'bexio-wc' ); ?>
 			</a>
+			<button type="button" id="bexio-update-resend-quote" class="button"
+	style="background: #000; color: #fff; margin-top: 5px;"
+	data-order-id="<?php echo esc_attr( $order_id ); ?>"
+	data-nonce="<?php echo esc_attr( wp_create_nonce( 'bexio_quote_update_resend' ) ); ?>">
+	<?php esc_html_e( 'Update & Resend Quote', 'bexio-wc' ); ?>
+</button>
+			<span id="bexio-update-resend-status" style="margin-left:6px;"></span>
 		</p>
+		<script>
+		jQuery(function($){
+			$('#bexio-update-resend-quote').on('click', function(){
+				var $btn    = $(this);
+				var $status = $('#bexio-update-resend-status');
+				$btn.prop('disabled', true);
+				$status.text('<?php echo esc_js( __( 'Updating…', 'bexio-wc' ) ); ?>');
+
+				$.post(ajaxurl, {
+					action:   'bexio_update_resend_quote',
+					order_id: $btn.data('order-id'),
+					nonce:    $btn.data('nonce')
+				}).done(function(res){
+					$status.text(res.success ? res.data.message : res.data);
+				}).fail(function(){
+					$status.text('<?php echo esc_js( __( 'Request failed.', 'bexio-wc' ) ); ?>');
+				}).always(function(){
+					$btn.prop('disabled', false);
+				});
+			});
+		});
+		</script>
 		<?php
 	}
 

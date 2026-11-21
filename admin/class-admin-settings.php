@@ -20,12 +20,59 @@ class Bexio_WC_Admin_Settings {
     }
     
     private function __construct() {
+      add_action('admin_init', array($this, 'maybe_dump_accounts'));
         add_action('admin_menu', array($this, 'add_menu_page'));
         add_action('admin_init', array($this, 'register_settings'));
         add_action('admin_enqueue_scripts', array($this, 'enqueue_admin_scripts'));
         add_action('wp_ajax_bexio_test_connection', array($this, 'ajax_test_connection'));
         add_action('wp_ajax_bexio_fetch_accounts', array($this, 'ajax_fetch_accounts'));
     }
+    
+    /**
+ * One-off: visit /wp-admin/admin.php?page=bexio-integration&bexio_dump_accounts=1
+ * Fetches all Bexio accounts, logs them to WC logger and prints them on screen.
+ */
+public function maybe_dump_accounts() {
+    if (empty($_GET['bexio_dump_accounts']) || ($_GET['page'] ?? '') !== 'bexio-integration') {
+        return;
+    }
+    if (!current_user_can('manage_woocommerce')) {
+        return;
+    }
+
+    $logger  = wc_get_logger();
+    $context = array('source' => 'bexio-accounts');
+
+    $api      = Bexio_WC_API::get_instance();
+    $accounts = $api->get_accounts(); // see step 3
+
+    if (empty($accounts) || !is_array($accounts)) {
+        $logger->error('Could not fetch accounts from Bexio (empty/false response).', $context);
+        wp_die('Failed to fetch accounts. Check WooCommerce → Status → Logs → bexio-accounts.');
+    }
+
+    $lines = array();
+    foreach ($accounts as $acc) {
+        $line = sprintf(
+            'id=%s | account_no=%s | name=%s | active=%s',
+            $acc['id'] ?? '?',
+            $acc['account_no'] ?? '?',
+            $acc['name'] ?? '?',
+            !empty($acc['is_active']) ? 'yes' : 'no'
+        );
+        $lines[] = $line;
+        $logger->info($line, $context);
+    }
+
+    // Highlight the ones we care about
+    foreach ($accounts as $acc) {
+        if (in_array((string) ($acc['account_no'] ?? ''), array('3000', '3200', '3600'), true)) {
+            $logger->warning('>>> CHECK THIS: ' . $acc['account_no'] . ' has internal id ' . $acc['id'], $context);
+        }
+    }
+
+    wp_die('<pre>' . esc_html(implode("\n", $lines)) . '</pre>', 'Bexio accounts');
+}
     
     public function add_menu_page() {
         add_submenu_page(

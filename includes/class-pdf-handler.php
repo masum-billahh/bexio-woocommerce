@@ -192,45 +192,58 @@ const SWISSPOST_LICENSE = '60156186';
         $this->download_invoice_pdf($order);
     }
 	
-	public function attach_bexio_pdf_to_alg_email($attachments, $email_id, $order, $email) {
 
-		if (!$order instanceof WC_Order) {
-			return $attachments;
-		}
-		
-		// If already attached once, stop
-		if ($order->get_meta('_pdf_attached_once')) {
-			return $attachments;
-		}
-		
-		if (!$order->get_meta('_bexio_order_pdf')) {
-			$this->get_order_pdf($order->get_id());
-		}
-		
-		$filename = $order->get_meta('_bexio_order_pdf');
-		if (!$filename) {
-			return $attachments;
-		}
+public function attach_bexio_pdf_to_alg_email($attachments, $email_id, $order, $email) {
 
-		$filepath = trailingslashit($this->upload_dir) . $filename;
-		$status = $order->get_status(); 
-
-		if (
-			file_exists($filepath) && 
-			get_option('bexio_wc_auto_send_pdfs') === 'yes' &&
-			in_array($status, ['service-eingetrof', 'processing'], true)
-		) {
-			$attachments[] = $filepath;
-			
-			// Mark as attached so next emails don't include it
-			$order->update_meta_data('_pdf_attached_once', 1);
-			$order->add_order_note(__('Bexio order pdf was attached to the email', 'bexio-wc'));
-			$order->save();
-		}
-
+	if (!$order instanceof WC_Order) {
 		return $attachments;
 	}
-  
+
+	$order_id = $order->get_id();
+
+	// If already attached once, stop
+	if ($order->get_meta('_pdf_attached_once')) {
+		return $attachments;
+	}
+
+	$pdf_meta = $order->get_meta('_bexio_order_pdf');
+
+	if (!$pdf_meta) {
+		$new_path = $this->get_order_pdf($order_id);
+
+		if ($new_path) {
+			$pdf_meta = basename($new_path);
+			// keep this in-memory instance in sync too
+			$order->update_meta_data('_bexio_order_pdf', $pdf_meta);
+		}
+	}
+
+	$filename = $pdf_meta;
+
+	if (!$filename) {
+		return $attachments;
+	}
+
+	$filepath = trailingslashit($this->upload_dir) . $filename;
+	$status = $order->get_status();
+	$auto_send = get_option('bexio_wc_auto_send_pdfs');
+
+	if (
+		file_exists($filepath) &&
+		$auto_send === 'yes' &&
+		in_array($status, ['service-eingetrof', 'processing'], true)
+	) {
+		$attachments[] = $filepath;
+
+		// Mark as attached so next emails don't include it
+		$order->update_meta_data('_pdf_attached_once', 1);
+		$order->add_order_note(__('Bexio order pdf was attached to the email', 'bexio-wc'));
+		$order->save();
+	}
+
+	return $attachments;
+}
+
     /**
      * Get order PDF from Bexio and store locally
      */
@@ -1382,7 +1395,19 @@ private function get_swisspost_needed_methods($order) {
     }
 
     $is_gas_method = in_array($instance_id, $this->gas_shipping_instance_ids, true);
-    if ($is_gas_method) {
+
+    // Collection-box flag is a second, independent trigger for GAS —
+    // either the shipping-method check above or this meta flag is
+    // enough on its own. get_meta() is HPOS-safe (WC_Order's data
+    // store resolves it correctly whether orders live in the posts
+    // table or the dedicated orders table).
+    $collection_box = $order->get_meta('_shipping_send_collection_box');
+    if ($collection_box === '' || $collection_box === null) {
+        $collection_box = $order->get_meta('_send_collection_box');
+    }
+    $is_collection_box = (int) $collection_box === 1;
+
+    if (($is_gas_method || $is_collection_box) && !in_array('gas_eco', $methods, true)) {
         $methods[] = 'gas_eco';
     }
 
@@ -1488,28 +1513,11 @@ public function render_swisspost_curated_print_view() {
     }
     var row = plan[i];
 
-    // Check first — if labels already exist for this order, use them
-    // and skip generation entirely.
-    jQuery.post(ajaxUrl, {
-        action: 'bexio_swisspost_resolve_labels',
-        order_id: row.order_id,
-        nonce: resolveNonce
-    }).done(function (response) {
-        var existing = (response && response.success && response.data && response.data.files) || [];
-
-        if (existing.length > 0) {
-            existing.forEach(function (f) { labelFiles.push(f); });
-            processOrder(i + 1);
-        } else {
-            generateMethodsForOrder(row.order_id, row.methods, 0, function () {
-                processOrder(i + 1);
-            });
-        }
-    }).fail(function () {
-        // Resolver failed — fall back to generating rather than skipping the order.
-        generateMethodsForOrder(row.order_id, row.methods, 0, function () {
-            processOrder(i + 1);
-        });
+    // Always generate for the matched methods — no pre-check against
+    // existing files on disk. generateMethodsForOrder() resolves
+    // whatever lands on disk for this order after generation.
+    generateMethodsForOrder(row.order_id, row.methods, 0, function () {
+        processOrder(i + 1);
     });
 }
  

@@ -55,6 +55,11 @@ class Bexio_WC_Order_Sync {
      * Handle order status changes
      */
     public function handle_order_status_change($order_id, $old_status, $new_status, $order) {
+    
+    if ( ! $order instanceof WC_Order || $order->get_type() === 'shop_payment' ) {
+        return;
+    }
+
     if (isset($this->processing_orders[$order_id])) {
         return;
     }
@@ -73,9 +78,9 @@ class Bexio_WC_Order_Sync {
         
         // Determine create status based on order items
         if ($has_mixed_item_pick_home) {
-            $create_status = 'service-pickhome';
+            $create_status = 'service-eingetrof';
         } elseif ($has_service_items) {
-            //$create_status = 'service-eingetrof';
+            $create_status = 'service-eingetrof';
         } else {
             $create_status = 'processing';
         }
@@ -185,6 +190,28 @@ private function order_has_service_items($order) {
     }
     
     return false;
+}
+
+private function get_shipping_title($order, $shipping_item) {
+    $title       = $shipping_item->get_name(); // fallback
+    $lang        = $order->get_meta('wpml_language', true);
+    $instance_id = $shipping_item->get_instance_id();
+
+    if (!$lang || !$instance_id) {
+        return $title;
+    }
+
+    $current = apply_filters('wpml_current_language', null);
+    do_action('wpml_switch_language', $lang);
+
+    $method = WC_Shipping_Zones::get_shipping_method($instance_id);
+    if ($method && $method->get_title()) {
+        $title = $method->get_title();
+    }
+
+    do_action('wpml_switch_language', $current);
+
+    return $title;
 }
 
     /**
@@ -366,8 +393,8 @@ if (!empty($debug_info)) {
         }
 		
 		// Switch to order's language
-		$current_lang = function_exists('icl_object_id') ? apply_filters('wpml_current_language', null) : false;
-		$this->switch_to_order_language($order);
+		$original_lang = function_exists('icl_object_id') ? apply_filters('wpml_current_language', null) : false;
+        $this->switch_to_order_language($order);
         
         $bexio_order_id = $order->get_meta('_bexio_order_id', true);
         
@@ -717,8 +744,13 @@ if (!empty($debug_info)) {
             $tax_id = $this->get_tax_id();
             
             foreach ($shipping_items as $shipping_item) {
-                $shipping_method_title = $shipping_item->get_name();
-            }
+    $shipping_method_title = $shipping_item->get_name();
+    break;
+}
+
+if (empty($shipping_method_title)) {
+    $shipping_method_title = __('Shipping', 'bexio-wc');
+}
             
             $shipping_total = $order->get_shipping_total();
             $shipping_tax = $order->get_shipping_tax();
@@ -751,7 +783,7 @@ if (!empty($debug_info)) {
                     'type'        => 'KbPositionCustom',
                     'amount'      => 1,
                     'unit_id'     => 1,
-                    'account_id'  => 149,
+                    'account_id'  => 151,
                     'tax_id'      => 28,
                     'text'        => $fee->get_name(),
                     'unit_price'  => round($fee_total + $fee_tax, 2),
@@ -874,44 +906,16 @@ foreach ( $discount_items as $discount ) {
         $account_id = get_option('bexio_wc_shipping_account', '151');
         $tax_id = $this->get_tax_id();
         
-        $shipping_method_title = '';
-        
-       foreach ($shipping_items as $shipping_item) {
-            $shipping_method_title = $shipping_item->get_name();
-            
-            if (function_exists('icl_object_id')) {
-                $shipping_method_id = $shipping_item->get_method_id();
-                $instance_id = $shipping_item->get_instance_id();
-                
-                $current_lang = apply_filters('wpml_current_language', null);
-                $order_lang = $order->get_meta('wpml_language', true);
-                
-                if ($order_lang && $order_lang !== $current_lang) {
-                    do_action('wpml_switch_language', $order_lang);
-                    
-                    // Get shipping zones
-                    $shipping_zones = WC_Shipping_Zones::get_zones();
-                    
-                    foreach ($shipping_zones as $zone) {
-                        foreach ($zone['shipping_methods'] as $method) {
-                            if ($method->id === $shipping_method_id && $method->instance_id == $instance_id) {
-                                $shipping_method_title = $method->title;
-                                break 2;
-                            }
-                        }
-                    }
-                    
-                    // Switch back to current language
-                    do_action('wpml_switch_language', $current_lang);
-                }
-            }
-            
-            break; 
-        }
-        
-        if (empty($shipping_method_title)) {
-            $shipping_method_title = __('Shipping', 'bexio-wc');
-        }
+$shipping_method_title = '';
+
+foreach ($shipping_items as $shipping_item) {
+    $shipping_method_title = $shipping_item->get_name();
+    break;
+}
+
+if (empty($shipping_method_title)) {
+    $shipping_method_title = __('Shipping', 'bexio-wc');
+}
 		
 		$shipping_total = $order->get_shipping_total();
 		$shipping_tax = $order->get_shipping_tax();
@@ -949,7 +953,7 @@ foreach ( $discount_items as $discount ) {
 					'type'        => 'KbPositionCustom',
 					'amount'      => 1,
 					'unit_id'     => 1,
-					'account_id'  => 149, 
+					'account_id'  => 151, 
 					'tax_id'      => 28,
 					'text'        => $fee->get_name(),
 					'unit_price'  => round($fee_total + $fee_tax, 2),
@@ -992,6 +996,8 @@ foreach ( $discount_items as $discount ) {
 				'value'         => (string) $discount_amount,
 			);
 		}
+ 	
+  $this->restore_language($original_lang);
     
     return $positions;
 }
@@ -1145,129 +1151,57 @@ private function sync_positions_for_document($order, $kb_document_type, $documen
         $bexio_positions = array();
     }
     
-    // Separate positions by type (product: account_id 149, shipping: account_id 151)
-    $bexio_products = array();
-    $bexio_shipping = null;
-    
+        // Key all real lines (products = 149, shipping/fees = 151) by account + normalized text
+    $bexio_lines = array();
     foreach ($bexio_positions as $position) {
-        if ($position['account_id'] == 149) {
-            // Product position - normalize text and use as key
-            $normalized_text = $this->normalize_text_for_comparison($position['text']);
-            $bexio_products[$normalized_text] = $position;
-        } elseif ($position['account_id'] == 151) {
-            // Shipping position
-            $bexio_shipping = $position;
+        $acc = $position['account_id'] ?? null;
+        if ($acc == 149 || $acc == 151) {
+            $key = $acc . '|' . $this->normalize_text_for_comparison($position['text']);
+            $bexio_lines[$key] = $position;
         }
     }
-    
-    // Separate WooCommerce positions
-    $wc_products = array();
-    $wc_shipping = null;
-    
+
+    $wc_lines = array();
     foreach ($wc_positions as $wc_position) {
-        if ($wc_position['account_id'] == 149) {
-            $normalized_text = $this->normalize_text_for_comparison($wc_position['text']);
-            $wc_products[$normalized_text] = $wc_position;
-        } elseif ($wc_position['account_id'] == 151) {
-            $wc_shipping = $wc_position;
+        $acc = $wc_position['account_id'] ?? null;
+        if ($acc == 149 || $acc == 151) {
+            $key = $acc . '|' . $this->normalize_text_for_comparison($wc_position['text']);
+            $wc_lines[$key] = $wc_position;
         }
     }
-    
-    // Track processed product names
-    $processed_products = array();
-    
-    // Process product positions
-    foreach ($wc_products as $normalized_name => $wc_position) {
-        $processed_products[] = $normalized_name;
-        
-        if (isset($bexio_products[$normalized_name])) {
-            // Product exists - update if needed
-            $existing_position = $bexio_products[$normalized_name];
-            
-            if ($this->position_needs_update($existing_position, $wc_position)) {
+
+    // Create / update
+    foreach ($wc_lines as $key => $wc_position) {
+        if (isset($bexio_lines[$key])) {
+            $existing = $bexio_lines[$key];
+            if ($this->position_needs_update($existing, $wc_position)) {
                 $this->api->update_document_position(
-                    $kb_document_type, 
-                    $document_id, 
-                    $existing_position['id'], 
+                    $kb_document_type,
+                    $document_id,
+                    $existing['id'],
                     $wc_position
                 );
-                /*
-                $this->log_sync(
-                    $order->get_id(), 
-                    'position_update', 
-                    'success', 
-                    "Updated {$kb_document_type} product position: {$wc_position['text']}"
-                );
-				*/
             }
         } else {
-            // Product doesn't exist - create it
             $this->api->create_document_position($kb_document_type, $document_id, $wc_position);
-            
             $this->log_sync(
-                $order->get_id(), 
-                'position_create', 
-                'success', 
-                "Created {$kb_document_type} product position: {$wc_position['text']}"
+                $order->get_id(),
+                'position_create',
+                'success',
+                "Created {$kb_document_type} position: {$wc_position['text']}"
             );
         }
     }
-    
-    // Delete product positions that no longer exist in WooCommerce
-    foreach ($bexio_products as $normalized_name => $bexio_position) {
-        if (!in_array($normalized_name, $processed_products)) {
+
+    // Delete lines that no longer exist in WooCommerce
+    foreach ($bexio_lines as $key => $bexio_position) {
+        if (!isset($wc_lines[$key])) {
             $this->api->delete_document_position($kb_document_type, $document_id, $bexio_position['id']);
-            
             $this->log_sync(
-                $order->get_id(), 
-                'position_delete', 
-                'success', 
-                "Deleted {$kb_document_type} product position: " . $this->normalize_text_for_comparison($bexio_position['text'])
-            );
-        }
-    }
-    
-    // Process shipping position
-    if ($wc_shipping) {
-        if ($bexio_shipping) {
-            // Shipping exists - update if needed
-            if ($this->position_needs_update($bexio_shipping, $wc_shipping)) {
-                $this->api->update_document_position(
-                    $kb_document_type, 
-                    $document_id, 
-                    $bexio_shipping['id'], 
-                    $wc_shipping
-                );
-                /*
-                $this->log_sync(
-                    $order->get_id(), 
-                    'position_update', 
-                    'success', 
-                    "Updated {$kb_document_type} shipping position: {$wc_shipping['text']}"
-                );
-				*/
-            }
-        } else {
-            // Shipping doesn't exist - create it
-            $this->api->create_document_position($kb_document_type, $document_id, $wc_shipping);
-            
-            $this->log_sync(
-                $order->get_id(), 
-                'position_create', 
-                'success', 
-                "Created {$kb_document_type} shipping position: {$wc_shipping['text']}"
-            );
-        }
-    } else {
-        // No shipping in WooCommerce but exists in Bexio - delete it
-        if ($bexio_shipping) {
-            $this->api->delete_document_position($kb_document_type, $document_id, $bexio_shipping['id']);
-            
-            $this->log_sync(
-                $order->get_id(), 
-                'position_delete', 
-                'success', 
-                "Deleted {$kb_document_type} shipping position"
+                $order->get_id(),
+                'position_delete',
+                'success',
+                "Deleted {$kb_document_type} position: " . $this->normalize_text_for_comparison($bexio_position['text'])
             );
         }
     }
@@ -1302,6 +1236,11 @@ private function position_needs_update($existing, $new) {
      * Handle payment completion
      */
     public function handle_payment_complete($order_id) {
+    
+    if ( ! $order instanceof WC_Order || $order->get_type() === 'shop_payment' ) {
+        return;
+    }
+
         $order = wc_get_order($order_id);
 		$bexio_invoice_id = $order->get_meta('_bexio_invoice_id', true);
         
@@ -1390,15 +1329,15 @@ private function position_needs_update($existing, $new) {
         );
 
         if (in_array($payment_method, $card_methods)) {
-            return get_option('bexio_wc_card_bank_id', 2);
+            return 2;
         }
 
         if (in_array($payment_method, $twint_methods)) {
-            return get_option('bexio_wc_twint_bank_id', 3);
+            return 3;
         }
 
         // Everything else (bacs, cheque, cod, invoice) → bank account 1
-        return get_option('bexio_wc_invoice_bank_id', 1);
+        return 1;
     }
     
     private function get_currency_id($currency_code) {

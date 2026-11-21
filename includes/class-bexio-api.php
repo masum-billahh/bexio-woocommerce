@@ -520,7 +520,7 @@ public function request($endpoint, $method = 'GET', $data = null, $from_taxes = 
      * Account & Tax Management
      */
     public function get_accounts() {
-        return $this->request('account');
+        return $this->request('accounts');
     }
     
     public function get_users() {
