@@ -395,6 +395,7 @@ if (!empty($debug_info)) {
 		// Switch to order's language
 		$original_lang = function_exists('icl_object_id') ? apply_filters('wpml_current_language', null) : false;
         $this->switch_to_order_language($order);
+        $current_lang = $original_lang;
         
         $bexio_order_id = $order->get_meta('_bexio_order_id', true);
         
@@ -408,6 +409,25 @@ if (!empty($debug_info)) {
         }
         
         try {
+        
+            // Already invoiced at payment time (Order Payments plugin):
+			// never invoice again from the edited order. Delivery only.
+			$already_invoice_id = $order->get_meta('_bexio_invoice_id', true);
+			if ($already_invoice_id && $order->get_meta('_op_initial_payment_id')) {
+				if (!$is_it_from_only_invoice && !$order->get_meta('_bexio_delivery_created')) {
+					$bexio_delivery = $this->api->create_delivery($bexio_order_id);
+					if (!$bexio_delivery || !isset($bexio_delivery['id'])) {
+						throw new Exception('Failed to create delivery in Bexio');
+					}
+					$this->api->issue_delivery($bexio_delivery['id']);
+					$order->update_meta_data('_bexio_delivery_id', $bexio_delivery['id']);
+					$order->update_meta_data('_bexio_delivery_created', 'yes');
+					$order->save();
+					$this->log_sync($order->get_id(), 'delivery_create', 'success', 'Delivery created: ' . $bexio_delivery['id'], null, $bexio_delivery['id']);
+				}
+				$this->restore_language($current_lang);
+				return $already_invoice_id;
+			}
 			
 			// Create delivery from order
 			if (!$is_it_from_only_invoice) {
@@ -477,8 +497,9 @@ if (!empty($debug_info)) {
 			}
 
             $this->log_sync($order->get_id(), 'invoice_create', 'success', 'Invoice created: ' . $bexio_invoice_id, null, $bexio_invoice_id);
-            $this->log_sync($order->get_id(), 'delivery_create', 'success', 'Delivery created: ' . $bexio_delivery_id, null, $bexio_delivery_id);
-			
+            if (!empty($bexio_delivery_id)) {
+                $this->log_sync($order->get_id(), 'delivery_create', 'success', 'Delivery created: ' . $bexio_delivery_id, null, $bexio_delivery_id);
+            }			
 			$this->restore_language($current_lang);
 			
             return $bexio_invoice_id;
@@ -1088,6 +1109,7 @@ private function update_bexio_order($order, $bexio_order_id) {
 
         // Sync positions for order and invoice (if exists)
 		$bexio_invoice_id = $order->get_meta('_bexio_invoice_id', true);
+ 		if ($order->get_meta('_op_initial_payment_id')) { $bexio_invoice_id = null; } // invoice is frozen; only the Bexio order follows edits
         $this->sync_bexio_positions($order, $bexio_order_id, $bexio_invoice_id);
 		
 		//$this->send_order_pdf($order, $bexio_order_id);
