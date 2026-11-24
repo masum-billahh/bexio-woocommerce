@@ -1653,18 +1653,13 @@ public function ajax_reschedule_bexio_invoice_handler() {
      * Log sync activity
      */
 		private function log_sync($order_id, $sync_type, $status, $message = '', $bexio_order_id = null, $bexio_invoice_id = null) {
-		global $wpdb;
-
-		$table = $wpdb->prefix . 'bexio_sync_log';
-
-		$wpdb->insert($table, array(
-			'order_id' => $order_id,
-			'bexio_order_id' => $bexio_order_id,
-			'bexio_invoice_id' => $bexio_invoice_id,
-			'sync_type' => $sync_type,
-			'sync_status' => $status,
-			'sync_message' => $message,
-		));
+		
+		if ($status === 'error') {
+			bexio_wc_log_error($order_id, $sync_type, $message, array(
+				'bexio_order_id'   => $bexio_order_id,
+				'bexio_invoice_id' => $bexio_invoice_id,
+			));
+		}
 
 		// Add order note WITHOUT triggering updates
 		$order = wc_get_order($order_id);

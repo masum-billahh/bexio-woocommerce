@@ -789,19 +789,10 @@ class Bexio_WC_Quote_Sync {
 	}
 
 	private function log( $order_id, $sync_type, $status, $message = '', $bexio_quote_id = null ) {
-		global $wpdb;
-
-		$wpdb->insert(
-			$wpdb->prefix . 'bexio_sync_log',
-			array(
-				'order_id'         => $order_id,
-				'bexio_order_id'   => $bexio_quote_id, // reusing the column for quote ID
-				'bexio_invoice_id' => null,
-				'sync_type'        => $sync_type,
-				'sync_status'      => $status,
-				'sync_message'     => $message,
-			)
-		);
+		
+		if ( $status === 'error' ) {
+			bexio_wc_log_error( $order_id, $sync_type, $message, array( 'bexio_quote_id' => $bexio_quote_id ) );
+		}
 
 		$order = wc_get_order( $order_id );
 		if ( $order ) {

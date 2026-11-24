@@ -18,6 +18,20 @@ if (!defined('ABSPATH')) {
     exit;
 }
 
+/**
+ * Write an error entry to the WooCommerce logger (WooCommerce > Status > Logs, source "bexio-wc").
+ */
+function bexio_wc_log_error($order_id, $sync_type, $message, $context = array()) {
+    if (!function_exists('wc_get_logger')) {
+        return;
+    }
+    wc_get_logger()->error(
+        sprintf('[order #%s] %s: %s', $order_id, $sync_type, $message),
+        array_merge(array('source' => 'bexio-wc'), $context)
+    );
+}
+
+
 // Define plugin constants
 define('BEXIO_WC_VERSION', '1.1.0');
 define('BEXIO_WC_PLUGIN_FILE', __FILE__);
@@ -115,8 +129,6 @@ class Bexio_WC_Integration {
     }
     
     public function activate() {
-        // Create necessary database tables
-        $this->create_tables();
         
         // Set default options
         $this->set_default_options();
@@ -125,31 +137,6 @@ class Bexio_WC_Integration {
         flush_rewrite_rules();
     }
     
-    private function create_tables() {
-        global $wpdb;
-        $charset_collate = $wpdb->get_charset_collate();
-        
-        $table_name = $wpdb->prefix . 'bexio_sync_log';
-        
-        $sql = "CREATE TABLE IF NOT EXISTS $table_name (
-            id bigint(20) NOT NULL AUTO_INCREMENT,
-            order_id bigint(20) NOT NULL,
-            bexio_order_id bigint(20) DEFAULT NULL,
-            bexio_invoice_id bigint(20) DEFAULT NULL,
-            sync_type varchar(50) NOT NULL,
-            sync_status varchar(20) NOT NULL,
-            sync_message text,
-            created_at datetime DEFAULT CURRENT_TIMESTAMP,
-            updated_at datetime DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-            PRIMARY KEY (id),
-            KEY order_id (order_id),
-            KEY bexio_order_id (bexio_order_id),
-            KEY sync_status (sync_status)
-        ) $charset_collate;";
-        
-        require_once(ABSPATH . 'wp-admin/includes/upgrade.php');
-        dbDelta($sql);
-    }
     
     private function set_default_options() {
         $defaults = array(
