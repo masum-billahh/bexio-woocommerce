@@ -1086,8 +1086,21 @@ private function update_bexio_order($order, $bexio_order_id) {
         $order = wc_get_order($order);
     }
 
-    if (!$order) {
+        if (!$order) {
         return false;
+    }
+
+    // Frozen at what was originally invoiced; later edits are billed via
+    // correction invoices with their own Bexio order.
+    if ($this->is_frozen_op_order($order)) {
+        $this->log_sync(
+            $order->get_id(),
+            'order_update',
+            'skipped',
+            'Bexio order frozen (Order Payments): edits are billed via correction invoices',
+            $bexio_order_id
+        );
+        return $bexio_order_id;
     }
 
     try {
@@ -1109,7 +1122,6 @@ private function update_bexio_order($order, $bexio_order_id) {
 
         // Sync positions for order and invoice (if exists)
 		$bexio_invoice_id = $order->get_meta('_bexio_invoice_id', true);
- 		if ($order->get_meta('_op_initial_payment_id')) { $bexio_invoice_id = null; } // invoice is frozen; only the Bexio order follows edits
         $this->sync_bexio_positions($order, $bexio_order_id, $bexio_invoice_id);
 		
 		//$this->send_order_pdf($order, $bexio_order_id);
@@ -1609,6 +1621,10 @@ public function ajax_reschedule_bexio_invoice_handler() {
     if (!$bexio_invoice_id) {
         wp_send_json_error(['message' => 'No Bexio invoice on this order']);
     }
+    
+    if ($this->is_frozen_op_order($order)) {
+        wp_send_json_error(['message' => 'This order uses correction invoices. The original invoice and order are frozen and cannot be re-synced.']);
+    }    
 
     // Bexio won't let you revert an invoice that has a payment on it.
     if ($bexio_payment_id) {
@@ -1674,5 +1690,15 @@ public function ajax_reschedule_bexio_invoice_handler() {
 			unset($this->processing_orders[$order_id]);
 		}
 	}
+ 
+ /**
+ * Order Payments plugin: orders paid upfront (anything except COD) have their
+ * Bexio order + invoice frozen after the initial payment. COD orders are
+ * invoiced later and keep the normal sync behaviour.
+ */
+private function is_frozen_op_order($order) {
+    return $order->get_meta('_op_initial_payment_id')
+        && $order->get_payment_method() !== 'cod';
+}
 
 }

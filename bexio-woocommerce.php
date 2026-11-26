@@ -3,7 +3,7 @@
  * Plugin Name: Bexio WooCommerce Integration
  * Plugin URI: https://www.upwork.com/freelancers/~01a6e65817b86d4589?mp_source=share
  * Description: Complete Bexio API integration for WooCommerce with order sync, PDF generation, and accounting automation
- * Version: 1.2.0
+ * Version: 1.2.1
  * Author: Masum Billah
  * Author URI: https://www.upwork.com/freelancers/~01a6e65817b86d4589?mp_source=share
  * Text Domain: bexio-wc
